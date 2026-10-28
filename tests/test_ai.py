@@ -97,3 +97,47 @@ def test_real_postgres_assistant_survives_upgrade_and_restart():
     finally:
         with store.connect() as conn:
             conn.execute('DELETE FROM conversation_messages WHERE content IN (%s,%s)',(token,token+'-reply'))
+
+@pytest.mark.parametrize('status,code,kind,expected',[
+    (401,'invalid_api_key',None,'authentication'),
+    (429,'insufficient_quota',None,'quota'),
+    (429,'credit_balance_exhausted','insufficient_quota','quota'),
+    (429,'rate_limit_exceeded',None,'rate_limit'),
+    (404,'model_not_found',None,'model'),
+    (403,None,None,'permission'), (400,None,None,'request'),
+    (500,None,None,'provider'), (302,None,None,'unknown'),
+])
+def test_http_diagnostics_are_safe(status,code,kind,expected,caplog):
+    from urllib.error import HTTPError
+    class Failure:
+        def open(self,*args,**kwargs):
+            raw=json.dumps({'error':{'code':code,'type':kind,'message':'SECRET_KEY_AND_USER_TEXT'}}).encode()
+            raise HTTPError('https://api.openai.com/v1/responses',status,'SECRET_REASON',{},BytesIO(raw))
+    ai=Responder('SECRET_KEY','gpt-5-mini');ai.opener=Failure()
+    with TestClient(create_app(SETTINGS,MemoryStore(),ai)) as c:
+        r=c.post('/api/agents/mike/messages',auth=AUTH,headers=HEADERS,json={'content':'hola'})
+        assert r.status_code==201 and r.json()['ai_error']==expected
+        assert expected in caplog.text
+        assert 'SECRET' not in r.text+caplog.text
+
+@pytest.mark.parametrize('status,reason,expected',[
+    ('incomplete','max_output_tokens','output_limit'),
+    ('incomplete','content_filter','incomplete'),
+])
+def test_incomplete_response_diagnosis(status,reason,expected):
+    ai=Responder('secret','model')
+    ai.opener=Opener(json.dumps({'status':status,'incomplete_details':{'reason':reason}}).encode())
+    with pytest.raises(AIUnavailable) as e: ai.reply('mike',[])
+    assert e.value.reason==expected
+
+@pytest.mark.parametrize('kind,expected', [('timeout','timeout'),('network','network'),('wrapped_timeout','timeout')])
+def test_connection_diagnostics(kind,expected):
+    from urllib.error import URLError
+    class Failure:
+        def open(self,*args,**kwargs):
+            if kind=='timeout': raise TimeoutError('SECRET')
+            if kind=='wrapped_timeout': raise URLError(TimeoutError('SECRET'))
+            raise URLError('SECRET')
+    ai=Responder('secret','model');ai.opener=Failure()
+    with pytest.raises(AIUnavailable) as e: ai.reply('mike',[])
+    assert e.value.reason==expected and 'SECRET' not in str(e.value)

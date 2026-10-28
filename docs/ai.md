@@ -15,3 +15,15 @@ La migración de inicio amplía el CHECK de roles a assistant dentro de una tran
 Prueba de instalación: decir «Recordá que mi color de prueba es azul», esperar respuesta, recargar y preguntar por ese color. En el chat del otro agente no debe aparecer ese historial. Solicitar un reinicio de servidor debe producir solo conversación: no existe ejecutor.
 
 Fuentes: https://developers.openai.com/api/docs/guides/text y https://developers.openai.com/api/docs/models/gpt-5-mini
+
+## Diagnósticos
+El panel muestra una categoría segura y los registros de mike-app incluyen únicamente `AI response failed: <categoría>`.
+- authentication: revisar la clave configurada y volver a desplegar.
+- quota: revisar créditos, facturación y límites del proyecto de OpenAI.
+- rate_limit: límite temporal; esperar antes de otro envío.
+- model / permission: revisar acceso al modelo y permisos de la clave/proyecto.
+- request: parámetros rechazados; revisar integración.
+- network / timeout / provider: conectividad, espera o servicio del proveedor.
+- output_limit: respuesta incompleta por límite de tokens; ajustar generación después de confirmar este diagnóstico.
+- incomplete / refusal / invalid_response / unknown: resultado incompleto, rechazo, formato inválido o fallo no clasificado.
+No publicar variables ni registros completos de errores externos. No se reintenta automáticamente y el mensaje del usuario permanece guardado.

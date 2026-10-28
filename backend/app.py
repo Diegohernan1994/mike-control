@@ -1,6 +1,7 @@
 """First backend milestone: protected dashboard and durable conversation archive.
 Optional conversational AI; no SSH, scheduler or execution tools.
 """
+import logging
 import os
 import secrets
 from contextlib import asynccontextmanager
@@ -183,9 +184,11 @@ def create_app(settings=None, store=None, responder=None):
                     answer = responder.reply(agent, store.messages(agent))
                     result['reply'] = store.append(agent,answer,role='assistant')
                     result['ai'] = 'responded'
-                except AIUnavailable:
+                except AIUnavailable as exc:
                     # User message is already durable. Never expose provider bodies or keys.
-                    result.update(ai='unavailable', warning='Mensaje guardado. No se pudo generar una respuesta. Revisá la clave, el modelo y el saldo de la API en OpenAI; luego enviá un nuevo mensaje. No se reintentó automáticamente.')
+                    logging.getLogger('mike.ai').warning('AI response failed: %s', exc.reason)
+                    result.update(ai='unavailable', ai_error=exc.reason,
+                                  warning='Mensaje guardado. ' + exc.user_message + ' [Diagnóstico: ' + exc.reason + ']')
             return result
         finally:
             lock.release()

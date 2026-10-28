@@ -10,3 +10,6 @@ Pruebas incluidas: API autenticada, aislamiento, persistencia de assistant despu
 
 ## Pendiente
 Integrar y desplegar esta segunda entrega con autorización. Backups y retención de PostgreSQL. Monitoreo HTTP/SSH cada 15 minutos, métricas, detección de bots, Telegram, memoria de incidentes y resúmenes, propuestas y ejecución con aprobación específica. Ningún servidor está siendo inspeccionado y ningún chat ejecuta comandos.
+
+## Diagnóstico del primer intento real
+El propietario desplegó la segunda entrega y compartió un aviso de fallo genérico al llamar a OpenAI. La causa real aún no está identificada. Rama codex/ai-diagnostics: diagnósticos acotados para autenticación, cuota, permisos, modelo, solicitudes, conexión, timeout y respuestas incompletas. Nunca se muestran cuerpos de error, claves ni mensajes del proveedor. Pruebas locales: 33 aprobadas; PostgreSQL y Docker se verifican en CI. No se cambiaron credenciales, modelo ni presupuesto de tokens por conjetura.
