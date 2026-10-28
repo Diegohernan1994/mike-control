@@ -1,0 +1,9 @@
+*
+!Dockerfile
+!requirements.lock
+!backend/
+!backend/**
+!web/
+!web/app.html
+!web/app.js
+**/__pycache__
