@@ -1,24 +1,29 @@
 # Mike Control
 
-Panel y sistema de supervisión de sitios con Mike como coordinador y un agente por sitio.
+Centro de supervisión con Mike y un agente por sitio. Primera entrega de backend: panel protegido y archivo de conversaciones en PostgreSQL.
 
-## Estado actual
-Prototipo estático navegable, sin backend ni conexiones reales. Los chats responden con mensajes de demostración y guardan su historial únicamente en localStorage de este navegador. No hay IA, PostgreSQL, SSH, Telegram ni escaneos activos. No ingresar credenciales.
+**Todavía no hay IA, SSH, Telegram ni escaneos activos.** Los mensajes se guardan, pero no reciben respuestas generadas ni ejecutan acciones.
 
-## Ejecutar el prototipo
-Abrir `web/index.html` en un navegador. Para servirlo localmente, con Python instalado:
+## Instalación
+Leer [la guía de Easypanel](docs/easypanel.md). La app requiere DATABASE_URL, ADMIN_USERNAME y ADMIN_PASSWORD (24+ caracteres). No hay credenciales por defecto. Configurar secretos directamente en el servidor, nunca en Git ni chats.
+
 ```sh
-python -m http.server 8080 --directory web --bind 127.0.0.1
+pip install -r requirements.lock
+uvicorn backend.app:create_app --factory --host 127.0.0.1 --port 8000
 ```
-Visitar http://localhost:8080. Este servidor es para desarrollo.
+Las variables deben estar en el entorno antes de iniciar. El backend crea su tabla en una base dedicada. Para Easypanel usar Dockerfile de la raíz y puerto interno 8000, con HTTPS en el proxy.
 
-## Documentación
-- [Reglas para Codex](AGENTS.md)
-- [Requisitos](docs/requirements.md)
-- [Arquitectura propuesta](docs/architecture.md)
-- [Estado y próximos pasos](docs/status.md)
-- [Continuar en Codex](docs/development.md)
+## Interfaz
+- La aplicación real usa web/app.html y web/app.js y requiere backend.
+- El prototipo original permanece en web/index.html; es una demo local sin autenticación ni integración. No desplegarlo como panel operativo.
 
-## Desarrollo y despliegue
-GitHub es la fuente del código. Trabajar en ramas y revisar propuestas antes de integrar. No hay automatizaciones de despliegue. Easypanel es el destino previsto, todavía sin configurar.
-Las credenciales nunca se guardan en Git. La memoria operativa irá en PostgreSQL, separada del repositorio.
+## Continuidad
+Leer [AGENTS.md](AGENTS.md), [requisitos](docs/requirements.md), [arquitectura](docs/architecture.md), [estado](docs/status.md) y [desarrollo](docs/development.md).
+El código no configura despliegues automáticos. Los cambios remotos de sitios seguirán requiriendo autorización específica, implementada en un ejecutor futuro separado.
+
+## Pruebas
+```sh
+pip install -r requirements-dev.txt
+python -m pytest -q
+```
+La prueba de DB real requiere TEST_DATABASE_URL de una base desechable. Consultar las limitaciones de validación en docs/status.md.

@@ -1,4 +1,4 @@
-# Arquitectura propuesta — aún no implementada
+# Arquitectura objetivo — implementación parcial
 
 ## Componentes
 - Frontend web privado con autenticación, resumen, métricas, historial y chats.
@@ -27,9 +27,9 @@ Memoria de desarrollo en Git; memoria operativa en PostgreSQL. Resúmenes genera
 Backups y prueba de restauración de la base; nunca depender de la capa efímera de un contenedor.
 
 ## Hosting
-Destino previsto: Easypanel. Ubicación y recursos pendientes. Preferir servidor separado de las Droplets supervisadas.
+Destino: Easypanel en DonWeb, separado de las Droplets supervisadas. Recursos pendientes de inventario.
 Medición externa independiente para representar acceso de visitantes. Si Mike comparte infraestructura con un objetivo, documentar el punto único de fallo y disponer de un monitor externo.
 Separar entorno de pruebas y producción. No configurar despliegue automático de producción a partir de cualquier push.
 
 ## Lo que contiene este repositorio hoy
-Solo prototipo estático. localStorage no es memoria central ni ofrece autenticación. No hay daemon, SSH, API de OpenAI, scheduler ni ejecución remota.
+Prototipo estático conservado en web/index.html. Backend base FastAPI con HTTP Basic y archivo de mensajes en PostgreSQL, servido por web/app.html y web/app.js. No hay SSH, API de OpenAI, scheduler ni ejecución remota. El historial aún no se envía a un modelo. Instalación y verificación real de DB pendientes; consultar docs/status.md.

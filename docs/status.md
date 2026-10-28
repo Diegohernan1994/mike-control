@@ -1,32 +1,32 @@
-# Estado — 2026-10-28
+# Estado — 2026-10-28, entrega de backend base
 
-## Disponible
-- Prototipo original transferido a web/index.html.
-- Resumen, pestañas de incidentes/aprobaciones/memoria/configuración.
-- Chat simulado de Mike y por agente; mensajes locales al navegador.
-- Estados sin conexión y frecuencia prevista de 15 minutos.
-- Documentación del alcance y restricciones.
+## Implementado en código, pendiente de instalar
+- Prototipo original conservado en web/index.html.
+- Panel servido por FastAPI en web/app.html y web/app.js.
+- Acceso de propietario por HTTP Basic; sin credenciales por defecto y requiere HTTPS en proxy.
+- Historial de mensajes por agente en PostgreSQL, máximo 100 mensajes recientes por consulta.
+- Creación idempotente de tabla e índice, transacciones y consultas parametrizadas.
+- Rutas de salud de proceso y de base, errores de DB sin devolver detalles sensibles.
+- Dockerfile con usuario sin privilegios y dependencias de ejecución fijadas.
+- Guía de instalación y variables en docs/easypanel.md.
+
+## Pruebas
+10 pruebas API aprobadas con almacén de pruebas; 1 prueba real PostgreSQL omitida por falta de instancia de pruebas. JavaScript verificado con node --check. Sin Docker disponible: construcción de imagen no verificada. No se ha probado contra la base del propietario.
+
+## Infraestructura informada por el propietario
+Easypanel en DonWeb, separado de las Droplets supervisadas. Servicios mike-db y mike-app creados. Captura de PostgreSQL muestra listo para aceptar conexiones. Aplicación aún sin implementar; no se han recibido credenciales.
 
 ## No implementado
-Autenticación propia, backend, PostgreSQL, memoria central, OpenAI, conexiones SSH, métricas, scheduler, alertas Telegram, propuestas reales y ejecutor con aprobaciones.
-No hay servidores conectados, escaneos activos ni despliegue en Easypanel.
+OpenAI y respuestas de agentes, memoria semántica/resúmenes, SSH, métricas, scheduler cada 15 minutos, incidentes, Telegram, propuestas, aprobaciones y ejecutor.
+No hay escaneos activos ni servidores supervisados. Mensajes guardados no ejecutan nada.
 
-## Datos pendientes
-- Dónde está Easypanel y recursos disponibles.
-- Sistema operativo, panel y recursos de la Droplet piloto.
-- Mapeo de los tres servidores y sitios que alojan.
-- Proxy/CDN, servidor web, ubicación de logs y backups.
-- Dominio privado para el panel.
-- Configuración segura de SSH, OpenAI y Telegram cuando corresponda; no pedir secretos por chat.
+## Próximas tareas
+1. Revisar e integrar la rama y completar pruebas reales de PostgreSQL e imagen.
+2. Configurar variables directamente en Easypanel, dominio HTTPS, puerto 8000 y desplegar con autorización.
+3. Verificar persistencia después de reiniciar mike-app y configurar backups/retención.
+4. Implementar monitoreo HTTP y scheduler; luego inspector SSH de operaciones permitidas.
+5. Integrar OpenAI y Telegram con controles de identidad, contexto y alertas.
+6. Implementar propuestas y aprobación de un solo uso antes de habilitar cualquier herramienta de escritura.
 
-## Próximas entregas
-1. Revisar e integrar esta base.
-2. Crear backend con autenticación, esquema PostgreSQL y persistencia de conversaciones.
-3. Implementar monitoreo HTTP de lectura y scheduler cada 15 minutos; sin declarar activo hasta verificar.
-4. Preparar y revisar el acceso SSH restringido al piloto.
-5. Integrar alertas Telegram con identidad verificada y deduplicación.
-6. Implementar propuestas y aprobaciones de un solo uso, probadas antes de habilitar escritura.
-7. Preparar despliegue revisable en Easypanel y realizarlo cuando se autorice.
-
-## Validación
-La interfaz original se abrió en navegador y se verificó navegación al chat de Mike. Para esta transferencia se verifica que el HTML es idéntico al prototipo y que su JavaScript compila. No equivale a validar servicios operativos.
+## Pendiente de inventario
+OS, recursos, panel de Droplet piloto, mapeo de sitios/servidores, proxy/CDN, logs y backups.

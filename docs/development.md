@@ -1,19 +1,20 @@
 # Continuar con Codex
 
-## Abrir el código
-Clonar el repositorio y abrir su carpeta como proyecto local independiente de otros proyectos.
-Para revisar esta entrega antes de integrarla:
-```sh
+Abrir el repositorio como proyecto local independiente. Leer AGENTS.md y docs/status.md.
+
+Para revisar esta entrega sin integrar aún:
+```
 git fetch origin
 git switch --track origin/codex/initial-panel
 ```
-Si ya existe una rama local con ese nombre, usar git switch codex/initial-panel y revisar el estado antes de actualizar.
-Leer AGENTS.md y docs/status.md al comenzar una sesión. La conversación externa no se sincroniza automáticamente.
+Si la rama ya existe localmente, usar git switch codex/initial-panel y revisar cambios antes de actualizar. No sobrescribir archivos locales. La conversación externa no se sincroniza automáticamente.
 
-## Próxima tarea sugerida
-Revisar el prototipo y proponer la primera entrega de backend: autenticación, base PostgreSQL y persistencia de chats. Mantener monitoreo remoto y escritura deshabilitados. Validar documentación oficial de dependencias antes de implementarlas.
+## Estado de implementación
+Backend base en backend/app.py; panel conectado al archivo de conversaciones en web/app.html y web/app.js. Dockerfile en raíz, puerto 8000. El prototipo original sigue en web/index.html.
+Instalación y verificaciones pendientes en docs/easypanel.md. Las dependencias efectivamente probadas están fijadas en requirements.lock. requirements.txt expresa los rangos de actualización; cualquier actualización debe regenerar el lock y repetir pruebas.
 
-## Sincronización
-Cambios en ramas, commits explícitos y pull requests. Revisar y probar antes de integrar. No hacer force push ni sobrescribir trabajo ajeno.
-GitHub conserva código y decisiones de desarrollo; PostgreSQL conservará memoria operativa.
-No hay workflow de despliegue ni conexión configurada a Easypanel.
+## Siguiente tarea
+Completar integración real de PostgreSQL y construcción de la imagen. No declarar listo para producción sin esas pruebas y HTTPS/acceso configurados.
+Después implementar monitoreo de lectura y scheduler, OpenAI, Telegram y aprobaciones según docs/requirements.md. Cualquier implementación de API OpenAI debe consultar documentación oficial vigente antes de empezar.
+
+Trabajar en ramas y pull requests. No fusionar ni desplegar sin orden explícita. No hay workflow de despliegue automático ni SSH disponible. La memoria operativa será PostgreSQL, no Git.
