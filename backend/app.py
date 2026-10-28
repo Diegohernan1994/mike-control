@@ -1,10 +1,12 @@
 """First backend milestone: protected dashboard and durable conversation archive.
-No model, SSH, scheduler or execution tools are wired in this milestone.
+Optional conversational AI; no SSH, scheduler or execution tools.
 """
 import os
 import secrets
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from threading import Lock
+from backend.ai import Responder, AIUnavailable
 from pathlib import Path
 from typing import Annotated
 
@@ -22,14 +24,17 @@ AGENTS = ('mike', 'usbestroofing')
 class Settings:
     database_url: str
     username: str
-    password: str
+    password: str = field(repr=False)
+    api_key: str = field(default="", repr=False)
+    model: str = "gpt-5-mini"
 
     @classmethod
     def from_env(cls):
         values = [os.environ.get(k, '') for k in ('DATABASE_URL', 'ADMIN_USERNAME', 'ADMIN_PASSWORD')]
         if not all(values) or len(values[2]) < 24:
             raise RuntimeError('Set DATABASE_URL, ADMIN_USERNAME and ADMIN_PASSWORD (24+ characters).')
-        return cls(*values)
+        return cls(*values, api_key=os.environ.get("OPENAI_API_KEY", "").strip(),
+                   model=os.environ.get("OPENAI_MODEL", "gpt-5-mini").strip())
 
 class Store:
     def __init__(self, url):
@@ -50,6 +55,9 @@ class Store:
                 content text NOT NULL CHECK(length(content) BETWEEN 1 AND 8000),
                 created_at timestamptz NOT NULL DEFAULT now()
             )''')
+            # Upgrade the original role constraint transactionally without deleting history.
+            conn.execute('ALTER TABLE conversation_messages DROP CONSTRAINT IF EXISTS conversation_messages_role_check')
+            conn.execute("ALTER TABLE conversation_messages ADD CONSTRAINT conversation_messages_role_check CHECK(role IN ('user','system','assistant'))")
             conn.execute('''CREATE INDEX IF NOT EXISTS messages_agent_id_idx
                 ON conversation_messages(agent_id, id DESC)''')
 
@@ -64,20 +72,23 @@ class Store:
                 (agent,)).fetchall()
         return list(reversed(rows))
 
-    def append(self, agent, text):
+    def append(self, agent, text, role="user"):
         with self.connect() as conn:
             return conn.execute('''INSERT INTO conversation_messages(agent_id,role,content)
-                VALUES (%s,'user',%s) RETURNING id,role,content,created_at''',
-                (agent,text)).fetchone()
+                VALUES (%s,%s,%s) RETURNING id,role,content,created_at''',
+                (agent,role,text)).fetchone()
 
 class Message(BaseModel):
     content: str = Field(min_length=1, max_length=8000)
 
 
-def create_app(settings=None, store=None):
+def create_app(settings=None, store=None, responder=None):
     settings = settings or Settings.from_env()
     store = store or Store(settings.database_url)
     security = HTTPBasic()
+    responder = responder or (Responder(settings.api_key, settings.model) if settings.api_key else None)
+    # Docker runs one worker. Reject simultaneous sends instead of interleaving turns.
+    chat_locks = {agent: Lock() for agent in AGENTS}
 
     @asynccontextmanager
     async def lifespan(app):
@@ -141,7 +152,7 @@ def create_app(settings=None, store=None):
     @app.get('/api/status', dependencies=[Depends(owner)])
     def status():
         store.ready()
-        return {'database':'connected', 'ai':'not_connected', 'telegram':'not_connected',
+        return {'database':'connected', 'ai':'configured' if responder else 'not_connected', 'telegram':'not_connected',
                 'ssh':'not_connected', 'monitoring':'not_implemented', 'scan_interval_minutes':15,
                 'execution':'disabled', 'agents':[{'id':'mike','name':'Mike'},
                     {'id':'usbestroofing','name':'US Best Roofing'}]}
@@ -161,6 +172,22 @@ def create_app(settings=None, store=None):
         text = body.content.strip()
         if not text:
             raise HTTPException(422, 'Message cannot be blank')
-        return {'message':store.append(agent,text), 'ai':'not_connected'}
+        lock = chat_locks[agent]
+        if not lock.acquire(blocking=False):
+            raise HTTPException(409, 'This chat already has a response in progress')
+        try:
+            message = store.append(agent,text)
+            result = {'message':message, 'ai':'not_connected'}
+            if responder is not None:
+                try:
+                    answer = responder.reply(agent, store.messages(agent))
+                    result['reply'] = store.append(agent,answer,role='assistant')
+                    result['ai'] = 'responded'
+                except AIUnavailable:
+                    # User message is already durable. Never expose provider bodies or keys.
+                    result.update(ai='unavailable', warning='Mensaje guardado. No se pudo generar una respuesta. Revisá la clave, el modelo y el saldo de la API en OpenAI; luego enviá un nuevo mensaje. No se reintentó automáticamente.')
+            return result
+        finally:
+            lock.release()
 
     return app

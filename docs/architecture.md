@@ -31,5 +31,6 @@ Destino: Easypanel en DonWeb, separado de las Droplets supervisadas. Recursos pe
 Medición externa independiente para representar acceso de visitantes. Si Mike comparte infraestructura con un objetivo, documentar el punto único de fallo y disponer de un monitor externo.
 Separar entorno de pruebas y producción. No configurar despliegue automático de producción a partir de cualquier push.
 
-## Lo que contiene este repositorio hoy
-Prototipo estático conservado en web/index.html. Backend base FastAPI con HTTP Basic y archivo de mensajes en PostgreSQL, servido por web/app.html y web/app.js. No hay SSH, API de OpenAI, scheduler ni ejecución remota. El historial aún no se envía a un modelo. Instalación y verificación real de DB pendientes; consultar docs/status.md.
+## Implementación actual
+Backend FastAPI protegido, PostgreSQL y Responses API opcional con contexto reciente por chat, sin herramientas. Ver docs/ai.md para límites y configuración. SSH, scheduler, Telegram y ejecución remota pendientes. El propietario confirmó el panel base desplegado; la integración de IA se entrega aparte para revisión.
+

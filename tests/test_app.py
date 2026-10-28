@@ -16,8 +16,8 @@ class MemoryStore:
     def ready(self): pass
     def messages(self, agent):
         return [r for a,r in self.rows if a==agent][-100:]
-    def append(self, agent, text):
-        row={'id':len(self.rows)+1,'role':'user','content':text,'created_at':datetime.now(timezone.utc)}
+    def append(self, agent, text, role="user"):
+        row={'id':len(self.rows)+1,'role':role,'content':text,'created_at':datetime.now(timezone.utc)}
         self.rows.append((agent,row));return row
 
 @pytest.fixture
