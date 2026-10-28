@@ -32,9 +32,10 @@ La primera entrega usa HTTP Basic para un único propietario; el navegador muest
 6. GET /health/live comprueba proceso, no base; GET /health/ready requiere autenticación y prueba PostgreSQL. El healthcheck de Docker es de vida, no de disponibilidad de DB.
 Si DB no está disponible al iniciar, la app falla sin habilitar un modo temporal sin persistencia. Corregir configuración y volver a iniciar.
 
-## Validación local de esta entrega
-10 pruebas de API aprobadas con un almacén de pruebas: acceso, protección frente a escrituras de otros orígenes, límites, aislamiento, estados y errores sin secretos. JavaScript compilado con node --check.
-La prueba de PostgreSQL real está incluida, pero no ejecutada aquí por no haber una instancia de pruebas disponible. Docker no está disponible en este entorno: no se verificó docker build. Estas verificaciones deben completarse antes de considerar validado el despliegue.
+## Validación de esta entrega
+GitHub Actions verificó las pruebas API con PostgreSQL 18 real, consistencia de dependencias, sintaxis JavaScript, construcción Docker y arranque del contenedor. La prueba del contenedor confirmó autenticación, carga de interfaz y conservación de mensajes después del reinicio.
+Evidencia: https://github.com/Diegohernan1994/mike-control/actions/runs/40696773955
+Esto no sustituye comprobar la conexión interna y HTTPS en DonWeb después de configurar el servicio.
 
 Para reproducir:
 ```
