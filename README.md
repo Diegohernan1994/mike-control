@@ -2,7 +2,7 @@
 
 Centro de supervisión con Mike y un agente por sitio. Primera entrega de backend: panel protegido y archivo de conversaciones en PostgreSQL.
 
-**Todavía no hay IA, SSH, Telegram ni escaneos activos.** Los mensajes se guardan, pero no reciben respuestas generadas ni ejecutan acciones.
+**Chat con IA opcional y memoria reciente por agente.** Configurar OPENAI_API_KEY según [la guía de IA](docs/ai.md). Todavía no hay SSH, Telegram ni escaneos activos; los mensajes no ejecutan acciones.
 
 ## Instalación
 Leer [la guía de Easypanel](docs/easypanel.md). La app requiere DATABASE_URL, ADMIN_USERNAME y ADMIN_PASSWORD (24+ caracteres). No hay credenciales por defecto. Configurar secretos directamente en el servidor, nunca en Git ni chats.
