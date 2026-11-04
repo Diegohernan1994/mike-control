@@ -1,5 +1,8 @@
 # Estado — 2026-10-28
 
+## Preparación local — 2026-11-04
+El propietario verificó respuestas en el panel y acceso a gpt-6.1-sol con la clave de Mike; la variable OPENAI_MODEL del servicio muestra ese modelo. Preparado localmente un chequeo GET de disponibilidad para US Best Roofing cada 15 minutos, con resultado persistente. Está desactivado por defecto y requiere MONITOR_ENABLED=true y despliegue autorizado; esta modificación no ha sido desplegada. El chat no accede aún a los resultados, no hay alertas, SSH ni diagnóstico automático. HTTP exitoso no verifica formularios ni funcionamiento visual. Los redireccionamientos se registran sin seguirlos. Confirmar respaldos y probar la migración de base antes de desplegar.
+
 ## Base desplegada
 El propietario confirmó que mike.gdtwo.com funciona en Easypanel y PostgreSQL figura conectado. El panel base conserva conversaciones separadas. No se recibieron sus credenciales.
 
