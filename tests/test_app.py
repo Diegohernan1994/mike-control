@@ -14,6 +14,7 @@ class MemoryStore:
         self.rows = []
     def initialize(self): pass
     def ready(self): pass
+    def latest_check(self): return None
     def messages(self, agent):
         return [r for a,r in self.rows if a==agent][-100:]
     def append(self, agent, text, role="user"):
@@ -56,7 +57,7 @@ def test_validation_and_no_executor(client):
     assert client.post('/api/execute',auth=AUTH,headers=HEADERS,json={}).status_code==404
     status=client.get('/api/status',auth=AUTH).json()
     assert status['execution']=='disabled'
-    assert status['monitoring']=='not_implemented'
+    assert status['monitoring']=='disabled'
     assert status['ai']=='not_connected'
 
 def test_database_errors_do_not_leak_credentials():
@@ -90,3 +91,29 @@ def test_postgres_persistence_and_restart():
     finally:
         with a.connect() as conn:
             conn.execute('DELETE FROM conversation_messages WHERE content=%s',(text,))
+
+def test_postgres_monitor_due_and_persistence(monkeypatch):
+    url = os.environ.get('TEST_DATABASE_URL')
+    if not url: pytest.skip('Set TEST_DATABASE_URL to an isolated disposable PostgreSQL database')
+    store = Store(url)
+    store.initialize()
+    calls = []
+    def fake_probe():
+        calls.append(1)
+        return {'status': 'ok', 'http_status': 200, 'duration_ms': 12}
+    monkeypatch.setattr('backend.app.probe', fake_probe)
+    with store.connect() as conn:
+        conn.execute("DELETE FROM availability_checks WHERE site_id='usbestroofing'")
+    try:
+        store.check_if_due()
+        store.check_if_due()
+        assert calls == [1]
+        result = Store(url).latest_check()
+        assert result['status'] == 'ok' and result['http_status'] == 200
+        with store.connect() as conn:
+            conn.execute("UPDATE availability_checks SET checked_at=now()-interval '16 minutes' WHERE site_id='usbestroofing'")
+        store.check_if_due()
+        assert len(calls) == 2
+    finally:
+        with store.connect() as conn:
+            conn.execute("DELETE FROM availability_checks WHERE site_id='usbestroofing'")
