@@ -7,6 +7,8 @@ import secrets
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from threading import Lock
+from threading import Event, Thread
+from backend.monitor import probe, INTERVAL_SECONDS
 from backend.ai import Responder, AIUnavailable
 from pathlib import Path
 from typing import Annotated
@@ -28,6 +30,7 @@ class Settings:
     password: str = field(repr=False)
     api_key: str = field(default="", repr=False)
     model: str = "gpt-5-mini"
+    monitor_enabled: bool = False
 
     @classmethod
     def from_env(cls):
@@ -35,7 +38,8 @@ class Settings:
         if not all(values) or len(values[2]) < 24:
             raise RuntimeError('Set DATABASE_URL, ADMIN_USERNAME and ADMIN_PASSWORD (24+ characters).')
         return cls(*values, api_key=os.environ.get("OPENAI_API_KEY", "").strip(),
-                   model=os.environ.get("OPENAI_MODEL", "gpt-5-mini").strip())
+                   model=os.environ.get("OPENAI_MODEL", "gpt-5-mini").strip(),
+                   monitor_enabled=os.environ.get('MONITOR_ENABLED', '').lower() == 'true')
 
 class Store:
     def __init__(self, url):
@@ -61,6 +65,27 @@ class Store:
             conn.execute("ALTER TABLE conversation_messages ADD CONSTRAINT conversation_messages_role_check CHECK(role IN ('user','system','assistant'))")
             conn.execute('''CREATE INDEX IF NOT EXISTS messages_agent_id_idx
                 ON conversation_messages(agent_id, id DESC)''')
+            conn.execute('''CREATE TABLE IF NOT EXISTS availability_checks (
+                id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+                site_id text NOT NULL, checked_at timestamptz NOT NULL DEFAULT now(),
+                status text NOT NULL, http_status integer, duration_ms integer NOT NULL)''')
+
+    def check_if_due(self):
+        # Transaction lock makes the decision and check exclusive across workers.
+        with self.connect() as conn:
+            if not conn.execute('SELECT pg_try_advisory_xact_lock(87319452) AS locked').fetchone()['locked']:
+                return
+            due = conn.execute("""SELECT NOT EXISTS (SELECT 1 FROM availability_checks
+                WHERE site_id='usbestroofing' AND checked_at > now() - interval '15 minutes') AS due""").fetchone()['due']
+            if due:
+                result = probe()
+                conn.execute('INSERT INTO availability_checks(site_id,status,http_status,duration_ms) VALUES (%s,%s,%s,%s)',
+                             ('usbestroofing', result['status'], result['http_status'], result['duration_ms']))
+
+    def latest_check(self):
+        with self.connect() as conn:
+            return conn.execute("""SELECT checked_at,status,http_status,duration_ms FROM availability_checks
+                WHERE site_id='usbestroofing' ORDER BY id DESC LIMIT 1""").fetchone()
 
     def ready(self):
         with self.connect() as conn:
@@ -94,7 +119,24 @@ def create_app(settings=None, store=None, responder=None):
     @asynccontextmanager
     async def lifespan(app):
         store.initialize()
-        yield
+        stop = Event()
+        worker = None
+        if settings.monitor_enabled:
+            def run():
+                while not stop.is_set():
+                    try:
+                        store.check_if_due()
+                    except Exception:
+                        logging.getLogger('mike.monitor').warning('Monitor check failed; will retry')
+                    stop.wait(60)
+            worker = Thread(target=run, daemon=True, name='availability-monitor')
+            worker.start()
+        try:
+            yield
+        finally:
+            stop.set()
+            if worker:
+                worker.join(timeout=12)
 
     app = FastAPI(title='Mike Control', lifespan=lifespan, docs_url=None,
                   redoc_url=None, openapi_url=None)
@@ -154,7 +196,8 @@ def create_app(settings=None, store=None, responder=None):
     def status():
         store.ready()
         return {'database':'connected', 'ai':'configured' if responder else 'not_connected', 'telegram':'not_connected',
-                'ssh':'not_connected', 'monitoring':'not_implemented', 'scan_interval_minutes':15,
+                'ssh':'not_connected', 'monitoring':'enabled' if settings.monitor_enabled else 'disabled', 'scan_interval_minutes':15,
+                'latest_check':store.latest_check(),
                 'execution':'disabled', 'agents':[{'id':'mike','name':'Mike'},
                     {'id':'usbestroofing','name':'US Best Roofing'}]}
 
