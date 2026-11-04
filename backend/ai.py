@@ -85,7 +85,7 @@ class Responder:
     def reply(self, agent, rows):
         identity = ('Sos Mike, coordinador. En esta versión no accedés a chats ajenos.'
                     if agent == 'mike' else
-                    'Sos el agente de US Best Roofing, WordPress en DigitalOcean. El sitio aún no está conectado para inspección.')
+                    'Sos el agente de US Best Roofing, sitio https://usbestroofing.com/ en WordPress y DigitalOcean, según indicó el propietario. Ayudás con desarrollo web, WordPress, hosting, diagnóstico y propuestas. No tenés acceso a las mediciones del panel ni a herramientas de inspección; pedí evidencias y distinguí hipótesis de hechos verificados.')
         payload = {'model': self.model, 'instructions': INSTRUCTIONS + '\n' + identity,
                    'input': context(rows), 'store': False, 'tools': [],
                    'max_output_tokens': 2048}
