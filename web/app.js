@@ -1,7 +1,7 @@
 let currentView = 'Resumen', activeAgent = null, generation = 0;
 const content = document.querySelector('#content');
 const error = document.querySelector('#error');
-const names = {mike:'Mike',usbestroofing:'US Best Roofing'};
+const names = {mike:'Mike',usbestroofing:'US Best Roofing',centrotai:'Centro TAI',pacific:'Pacific',gabriels:'Gabriels'};
 const escapeHtml = s => String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 async function api(path, options={}) {
   const response = await fetch(path,{...options, headers:{'Content-Type':'application/json','X-Mike-Request':'1',...options.headers}});
@@ -25,8 +25,35 @@ async function view(tab) {
       content.innerHTML=`<div class="stats"><div class="card"><small>POSTGRESQL</small><div class="value">Conectado</div><small>Historial central de conversaciones</small></div><div class="card"><small>SITIO PILOTO</small><div class="value">${label}</div><small>${detail}</small></div><div class="card"><small>MONITOREO</small><div class="value">${status.monitoring==='enabled'?'Activado':'Desactivado'}</div><small>Consulta HTTP cada ${status.scan_interval_minutes} min</small></div></div><section class="card"><div class="row"><div><h2>US Best Roofing</h2><p class="muted">WordPress · DigitalOcean · SSH sin conectar</p></div><button id="open-agent">Abrir chat ↗</button></div></section><section class="card"><h2>Vos decidís</h2><p>El ejecutor está deshabilitado. El chat no autoriza ni ejecuta acciones.</p></section>`;
     }
     else if(tab==='Memoria')content.innerHTML='<section class="card"><h2>Historial persistente</h2><p>Los mensajes de Mike y US Best Roofing se guardan separados en PostgreSQL. Abrí cada conversación para consultar los últimos 100 mensajes.</p><p>La memoria de incidentes, resúmenes y acciones se implementará con sus respectivos servicios. Con OpenAI configurado, cada envío comparte hasta 40 mensajes recientes de ese chat (máximo 24.000 caracteres) para generar una respuesta. No hay búsqueda en todo el archivo ni memoria semántica todavía.</p></section>';
-    else if(tab==='Configuración')content.innerHTML=`<section class="card"><h2>Conexiones</h2><p>PostgreSQL: conectado<br>OpenAI: ${status.ai==='configured'?'configurado; se verifica al enviar':'sin configurar'}<br>Telegram: sin conectar<br>SSH: sin conectar<br>Monitoreo HTTP: ${status.monitoring==='enabled'?'activado':'desactivado'}<br>Ejecución remota: deshabilitada</p><p>Las credenciales se configuran en Easypanel, nunca en este chat.</p></section>`;
-    else content.innerHTML=`<section class="card"><h2>${tab==='Incidentes'?'Incidentes aún no implementados':'Sin acciones para aprobar'}</h2><p>${tab==='Incidentes'?'Consultá la última medición en Resumen. No hay alertas ni diagnósticos automáticos todavía.':'El circuito de propuestas y autorizaciones todavía no está implementado. Ningún mensaje constituye una aprobación de ejecución.'}</p></section>`;
+    else if(tab==='Configuración')content.innerHTML=`<section class="card"><h2>Conexiones</h2><p>PostgreSQL: conectado<br>OpenAI: ${status.ai==='configured'?'configurado; se verifica al enviar':'sin configurar'}<br>Telegram: sin conectar<br>SSH WordPress (solo lectura): ${status.ssh==='read_only'?'activo ('+escapeHtml((status.ssh_sites||[]).map(s=>names[s]||s).join(', '))+')':'sin conectar'}<br>Monitoreo HTTP: ${status.monitoring==='enabled'?'activado':'desactivado'}<br>WordPress Bridge: ${(status.wp_sites||[]).length?escapeHtml((status.wp_sites||[]).map(s=>names[s]||s).join(', ')):'sin configurar'}<br>GitHub / Vercel GitOps: ${(status.git_sites||[]).length?escapeHtml((status.git_sites||[]).map(s=>names[s]||s).join(', ')):'sin configurar'}</p><p>Las credenciales se configuran en Easypanel, nunca en este chat.</p></section>`;
+    else if(tab==='Aprobaciones'){
+      const data=await api('/api/proposals');if(ticket!==generation)return;
+      const items=data.proposals||[];
+      if(!items.length){
+        content.innerHTML='<section class="card"><h2>Sin acciones pendientes</h2><p>Cuando un agente proponga un cambio en WordPress (guardar página, crear respaldo, etc.), aparecerá acá para que lo apruebes o rechaces.</p></section>';
+      }else{
+        content.innerHTML=items.map(p=>{
+          const siteLabel=escapeHtml(names[p.site_id]||p.site_id);
+          const paramsStr=escapeHtml(JSON.stringify(p.params_json||{},null,2));
+          const actions=p.status==='pending'
+            ? `<div class="row" style="margin-top:12px;gap:8px;justify-content:flex-start"><button data-approve="${p.id}">Aprobar y ejecutar</button><button data-reject="${p.id}" style="background:#eee;color:#222">Rechazar</button></div>`
+            : '';
+          const resultStr=p.result_json?`<pre style="margin-top:8px;white-space:pre-wrap;font-size:12px;background:#f6f7f6;padding:8px;border-radius:6px">${escapeHtml(JSON.stringify(p.result_json,null,2))}</pre>`:'';
+          return `<section class="card"><div class="row"><div><strong>#${p.id} · ${siteLabel} · ${escapeHtml(p.tool_name)}</strong><div class="muted" style="font-size:12px">Estado: ${escapeHtml(p.status)} · Vence: ${escapeHtml(new Date(p.expires_at).toLocaleString())}</div></div></div><pre style="margin-top:8px;white-space:pre-wrap;font-size:12px;background:#f6f7f6;padding:8px;border-radius:6px">${paramsStr}</pre>${resultStr}${actions}</section>`;
+        }).join('');
+        content.querySelectorAll('[data-approve]').forEach(btn=>btn.addEventListener('click',async()=>{
+          btn.disabled=true;btn.textContent='Ejecutando…';error.textContent='';
+          try{await api('/api/proposals/'+btn.dataset.approve+'/approve',{method:'POST'});if(ticket===generation)await view('Aprobaciones');}
+          catch(e){if(ticket===generation){error.textContent=e.message;btn.disabled=false;btn.textContent='Aprobar y ejecutar';}}
+        }));
+        content.querySelectorAll('[data-reject]').forEach(btn=>btn.addEventListener('click',async()=>{
+          btn.disabled=true;error.textContent='';
+          try{await api('/api/proposals/'+btn.dataset.reject+'/reject',{method:'POST'});if(ticket===generation)await view('Aprobaciones');}
+          catch(e){if(ticket===generation){error.textContent=e.message;btn.disabled=false;}}
+        }));
+      }
+    }
+    else content.innerHTML='<section class="card"><h2>Incidentes aún no implementados</h2><p>Consultá la última medición en Resumen. No hay alertas ni diagnósticos automáticos todavía.</p></section>';
     document.querySelector('#open-agent')?.addEventListener('click',()=>chat('usbestroofing'));
   }catch(e){if(ticket===generation){content.textContent='';error.textContent=e.message;}}
 }
