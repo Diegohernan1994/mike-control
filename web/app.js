@@ -42,7 +42,10 @@ async function view(tab) {
       content.innerHTML=`<div class="stats"><div class="card"><small>POSTGRESQL</small><div class="value">Conectado</div><small>Historial central de conversaciones</small></div><div class="card"><small>SITIO PILOTO</small><div class="value">${label}</div><small>${detail}</small></div><div class="card"><small>MONITOREO</small><div class="value">${status.monitoring==='enabled'?'Activado':'Desactivado'}</div><small>Consulta HTTP cada ${status.scan_interval_minutes} min</small></div></div><section class="card"><h2>Estado de sitios monitoreados</h2>${checksHtml}</section><section class="card"><h2>Vos decidís</h2><p>${status.execution==='approval_required'?'Las acciones de escritura siempre pasan por la pestaña Aprobaciones antes de ejecutarse.':'El ejecutor está deshabilitado. El chat no autoriza ni ejecuta acciones.'}</p></section>`;
       content.querySelectorAll('[data-open-site]').forEach(b=>b.addEventListener('click',()=>chat(b.dataset.openSite)));
     }
-    else if(tab==='Memoria')content.innerHTML='<section class="card"><h2>Historial persistente</h2><p>Los mensajes de Mike y US Best Roofing se guardan separados en PostgreSQL. Abrí cada conversación para consultar los últimos 100 mensajes.</p><p>La memoria de incidentes, resúmenes y acciones se implementará con sus respectivos servicios. Con OpenAI configurado, cada envío comparte hasta 40 mensajes recientes de ese chat (máximo 24.000 caracteres) para generar una respuesta. No hay búsqueda en todo el archivo ni memoria semántica todavía.</p></section>';
+    else if(tab==='Memoria'){
+      const agentNames=(status.agents||[]).map(a=>escapeHtml(a.name)).join(', ');
+      content.innerHTML=`<section class="card"><h2>Historial persistente</h2><p>Los mensajes de cada chat (${agentNames}) se guardan separados en PostgreSQL. Abrí cada conversación para consultar los últimos 100 mensajes.</p><p>Las acciones aprobadas y mediciones de disponibilidad también quedan guardadas en PostgreSQL. Con OpenAI configurado, cada envío comparte hasta 40 mensajes recientes de ese chat (máximo 24.000 caracteres) para generar una respuesta.</p></section>`;
+    }
     else if(tab==='Configuración'){
       const siteRows=(status.agents||[]).filter(a=>a.kind!=='system').map(a=>{
         const prefix=a.id.toUpperCase();
