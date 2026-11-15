@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from threading import Lock
 from threading import Event, Thread
-from backend.monitor import probe, INTERVAL_SECONDS
+from backend.monitor import probe, INTERVAL_SECONDS, URL as DEFAULT_MONITOR_URL
 from backend.ai import Responder, AIUnavailable
 from backend.wp_bridge import BridgeError, execute_remote_tool, params_hash as compute_params_hash
 from backend.git_bridge import GitBridgeError, execute_git_proposal
@@ -109,6 +109,7 @@ class Settings:
                         'branch': os.environ.get(f'{prefix}_GITHUB_BRANCH', 'main').strip() or 'main',
                         'vercel_token': os.environ.get(f'{prefix}_VERCEL_TOKEN', '').strip(),
                         'vercel_project_id': os.environ.get(f'{prefix}_VERCEL_PROJECT_ID', '').strip(),
+                        'site_url': os.environ.get(f'{prefix}_SITE_URL', '').strip(),
                         'name': display_name(site_id, prefix),
                     }
 
@@ -135,8 +136,10 @@ class Store:
                 id text PRIMARY KEY CHECK(id ~ '^[a-z0-9][a-z0-9_-]{1,31}$' AND id <> 'mike'),
                 name text NOT NULL CHECK(length(name) BETWEEN 1 AND 80),
                 kind text NOT NULL CHECK(kind IN ('wordpress','vercel')),
+                url text,
                 created_at timestamptz NOT NULL DEFAULT now()
             )''')
+            conn.execute('ALTER TABLE sites ADD COLUMN IF NOT EXISTS url text')
             conn.execute('''CREATE TABLE IF NOT EXISTS conversation_messages (
                 id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
                 agent_id text NOT NULL,
@@ -171,22 +174,49 @@ class Store:
             conn.execute('ALTER TABLE proposals DROP CONSTRAINT IF EXISTS proposals_site_id_check')
             conn.execute("ALTER TABLE proposals ADD CONSTRAINT proposals_site_id_check CHECK(site_id ~ '^[a-z0-9][a-z0-9_-]{1,31}$')")
 
-    def check_if_due(self):
+    def check_if_due(self, targets=None):
         # Transaction lock makes the decision and check exclusive across workers.
+        targets = targets if targets is not None else [('usbestroofing', DEFAULT_MONITOR_URL)]
         with self.connect() as conn:
             if not conn.execute('SELECT pg_try_advisory_xact_lock(87319452) AS locked').fetchone()['locked']:
                 return
-            due = conn.execute("""SELECT NOT EXISTS (SELECT 1 FROM availability_checks
-                WHERE site_id='usbestroofing' AND checked_at > now() - interval '15 minutes') AS due""").fetchone()['due']
-            if due:
-                result = probe()
-                conn.execute('INSERT INTO availability_checks(site_id,status,http_status,duration_ms) VALUES (%s,%s,%s,%s)',
-                             ('usbestroofing', result['status'], result['http_status'], result['duration_ms']))
+            for site_id, target_url in targets:
+                if not target_url:
+                    continue
+                due = conn.execute("""SELECT NOT EXISTS (SELECT 1 FROM availability_checks
+                    WHERE site_id=%s AND checked_at > now() - interval '15 minutes') AS due""", (site_id,)).fetchone()['due']
+                if due:
+                    try:
+                        result = probe(url=target_url)
+                    except TypeError:
+                        result = probe()
+                    conn.execute('INSERT INTO availability_checks(site_id,status,http_status,duration_ms) VALUES (%s,%s,%s,%s)',
+                                 (site_id, result['status'], result['http_status'], result['duration_ms']))
+
+    def record_check(self, site_id, target_url):
+        try:
+            result = probe(url=target_url)
+        except TypeError:
+            result = probe()
+        with self.connect() as conn:
+            return conn.execute('''INSERT INTO availability_checks(site_id,status,http_status,duration_ms)
+                VALUES (%s,%s,%s,%s) RETURNING site_id,checked_at,status,http_status,duration_ms''',
+                (site_id, result['status'], result['http_status'], result['duration_ms'])).fetchone()
 
     def latest_check(self):
         with self.connect() as conn:
             return conn.execute("""SELECT checked_at,status,http_status,duration_ms FROM availability_checks
                 WHERE site_id='usbestroofing' ORDER BY id DESC LIMIT 1""").fetchone()
+
+    def latest_checks_by_site(self):
+        with self.connect() as conn:
+            return conn.execute('''SELECT DISTINCT ON (site_id) site_id,checked_at,status,http_status,duration_ms
+                FROM availability_checks ORDER BY site_id, id DESC''').fetchall()
+
+    def recent_incidents(self, limit=25):
+        with self.connect() as conn:
+            return conn.execute("""SELECT site_id,checked_at,status,http_status,duration_ms
+                FROM availability_checks WHERE status <> 'ok' ORDER BY id DESC LIMIT %s""", (limit,)).fetchall()
 
     def ready(self):
         with self.connect() as conn:
@@ -252,13 +282,14 @@ class Store:
 
     def list_sites(self):
         with self.connect() as conn:
-            return conn.execute('SELECT id,name,kind,created_at FROM sites ORDER BY created_at ASC, id ASC').fetchall()
+            return conn.execute('SELECT id,name,kind,url,created_at FROM sites ORDER BY created_at ASC, id ASC').fetchall()
 
-    def upsert_site(self, site_id, name, kind):
+    def upsert_site(self, site_id, name, kind, url=None):
+        clean_url = (url or '').strip() or None
         with self.connect() as conn:
-            return conn.execute('''INSERT INTO sites(id,name,kind) VALUES (%s,%s,%s)
-                ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, kind=EXCLUDED.kind
-                RETURNING id,name,kind,created_at''', (site_id, name, kind)).fetchone()
+            return conn.execute('''INSERT INTO sites(id,name,kind,url) VALUES (%s,%s,%s,%s)
+                ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, kind=EXCLUDED.kind, url=COALESCE(EXCLUDED.url, sites.url)
+                RETURNING id,name,kind,url,created_at''', (site_id, name, kind, clean_url)).fetchone()
 
     def delete_site(self, site_id):
         with self.connect() as conn:
@@ -271,6 +302,7 @@ class SiteCreate(BaseModel):
     id: str = Field(min_length=2, max_length=32)
     name: str = Field(min_length=1, max_length=80)
     kind: str = Field(pattern='^(wordpress|vercel)$')
+    url: str = Field(default='', max_length=300)
 
 
 def create_app(settings=None, store=None, responder=None):
@@ -282,6 +314,21 @@ def create_app(settings=None, store=None, responder=None):
     chat_locks = defaultdict(Lock)
     locks_guard = Lock()
 
+    def monitor_targets():
+        targets = {'usbestroofing': DEFAULT_MONITOR_URL}
+        for sid, cfg in settings.wp_sites.items():
+            if cfg.get('url'):
+                targets[sid] = cfg['url']
+        for sid, cfg in settings.git_sites.items():
+            if cfg.get('site_url'):
+                targets[sid] = cfg['site_url']
+        list_fn = getattr(store, 'list_sites', None)
+        if list_fn:
+            for row in list_fn():
+                if row.get('url'):
+                    targets[row['id']] = row['url']
+        return list(targets.items())
+
     @asynccontextmanager
     async def lifespan(app):
         store.initialize()
@@ -291,7 +338,7 @@ def create_app(settings=None, store=None, responder=None):
             def run():
                 while not stop.is_set():
                     try:
-                        store.check_if_due()
+                        store.check_if_due(monitor_targets())
                     except Exception:
                         logging.getLogger('mike.monitor').warning('Monitor check failed; will retry')
                     stop.wait(60)
@@ -390,6 +437,8 @@ def create_app(settings=None, store=None, responder=None):
                 'ssh':'read_only' if settings.ssh_sites else 'not_connected',
                 'monitoring':'enabled' if settings.monitor_enabled else 'disabled', 'scan_interval_minutes':15,
                 'latest_check':store.latest_check(),
+                'site_checks':getattr(store, 'latest_checks_by_site', lambda: [])(),
+                'incidents':getattr(store, 'recent_incidents', lambda: [])(),
                 'execution':'approval_required' if has_execution else 'disabled',
                 'wp_sites':sorted(settings.wp_sites.keys()),
                 'ssh_sites':sorted(settings.ssh_sites.keys()),
@@ -404,14 +453,27 @@ def create_app(settings=None, store=None, responder=None):
     def add_site(body: SiteCreate):
         site_id = body.id.strip().lower()
         name = body.name.strip()
+        url = body.url.strip()
         if site_id == 'mike' or not SITE_ID_RE.match(site_id):
             raise HTTPException(422, 'ID de sitio invalido (usa 2-32 letras minusculas, numeros, guiones).')
         if not name:
             raise HTTPException(422, 'Nombre requerido.')
+        if url and not (url.startswith('https://') or url.startswith('http://')):
+            raise HTTPException(422, 'La URL debe empezar con https:// o http://')
         upsert_fn = getattr(store, 'upsert_site', None)
         if not upsert_fn:
             raise HTTPException(501, 'Site registry not available')
-        site = upsert_fn(site_id, name, body.kind)
+        try:
+            site = upsert_fn(site_id, name, body.kind, url or None)
+        except TypeError:
+            site = upsert_fn(site_id, name, body.kind)
+        if settings.monitor_enabled and url and hasattr(store, 'record_check'):
+            def initial_scan():
+                try:
+                    store.record_check(site_id, url)
+                except Exception:
+                    logging.getLogger('mike.monitor').warning('Initial site check failed for %s', site_id)
+            Thread(target=initial_scan, daemon=True, name=f'monitor-init-{site_id}').start()
         return {'site': site}
 
     @app.delete('/api/sites/{site_id}', dependencies=[Depends(owner)])

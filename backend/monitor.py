@@ -12,9 +12,9 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def probe(opener=None):
+def probe(opener=None, url=URL):
     opener = opener or urllib.request.build_opener(NoRedirect())
-    request = urllib.request.Request(URL, headers={'User-Agent': 'MikeControlMonitor/1.0', 'Accept': 'text/html'}, method='GET')
+    request = urllib.request.Request(url, headers={'User-Agent': 'MikeControlMonitor/1.0', 'Accept': 'text/html'}, method='GET')
     start = time.monotonic()
     try:
         with opener.open(request, timeout=10) as response:

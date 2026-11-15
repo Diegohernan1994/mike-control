@@ -8,17 +8,29 @@ class DynamicMemoryStore(MemoryStore):
     def __init__(self):
         super().__init__()
         self.sites = {}
+        self.checks = []
 
     def list_sites(self):
         return list(self.sites.values())
 
-    def upsert_site(self, site_id, name, kind):
-        row = {'id': site_id, 'name': name, 'kind': kind}
+    def upsert_site(self, site_id, name, kind, url=None):
+        row = {'id': site_id, 'name': name, 'kind': kind, 'url': url}
         self.sites[site_id] = row
         return row
 
     def delete_site(self, site_id):
         return self.sites.pop(site_id, None)
+
+    def record_check(self, site_id, url):
+        row = {'site_id': site_id, 'url': url, 'status': 'ok', 'http_status': 200, 'duration_ms': 15}
+        self.checks.append(row)
+        return row
+
+    def latest_checks_by_site(self):
+        return list(self.checks)
+
+    def recent_incidents(self):
+        return []
 
 
 def test_env_auto_discovery_for_wp_and_vercel(monkeypatch):
@@ -53,9 +65,13 @@ def test_add_and_remove_custom_sites_via_api():
         assert c.post('/api/sites', auth=AUTH, headers=HEADERS, json={'id': 'mike', 'name': 'Mike 2', 'kind': 'wordpress'}).status_code == 422
         assert c.post('/api/sites', auth=AUTH, headers=HEADERS, json={'id': 'BAD ID!', 'name': 'Bad', 'kind': 'vercel'}).status_code == 422
 
-        # Add custom Vercel site
-        r = c.post('/api/sites', auth=AUTH, headers=HEADERS, json={'id': 'modernroofing', 'name': 'Modern Roofing', 'kind': 'vercel'})
+        # Invalid URL rejected
+        assert c.post('/api/sites', auth=AUTH, headers=HEADERS, json={'id': 'badurl', 'name': 'Bad', 'kind': 'vercel', 'url': 'ftp://x.com'}).status_code == 422
+
+        # Add custom Vercel site with monitoring URL
+        r = c.post('/api/sites', auth=AUTH, headers=HEADERS, json={'id': 'modernroofing', 'name': 'Modern Roofing', 'kind': 'vercel', 'url': 'https://modernroofing.example'})
         assert r.status_code == 201
+        assert r.json()['site']['url'] == 'https://modernroofing.example'
         agents = {a['id']: a for a in c.get('/api/status', auth=AUTH).json()['agents']}
         assert agents['modernroofing']['kind'] == 'vercel'
         assert agents['modernroofing']['custom'] is True
