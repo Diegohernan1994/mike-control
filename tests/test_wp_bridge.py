@@ -81,6 +81,8 @@ class MemoryProposalStore(MemoryStore):
 def test_read_only_vs_write_classification():
     assert is_read_only_call('wp_get_site_overview', {}) is True
     assert is_read_only_call('wp_system_health_check', {}) is True
+    assert is_read_only_call('wp_recent_changes', {'days': 7}) is True
+    assert is_read_only_call('wp_get_activity_log', {'category': 'all'}) is True
     assert is_read_only_call('tutor_diagnose_course', {'auto_fix': False}) is True
     assert is_read_only_call('tutor_diagnose_course', {'auto_fix': True}) is False
     assert is_read_only_call('tutor_manage_enrollment', {'action': 'check'}) is True

@@ -32,6 +32,8 @@ READ_ONLY_TOOLS = {
     'wp_list_pages',
     'wp_list_menus',
     'wp_list_plugins',
+    'wp_recent_changes',
+    'wp_get_activity_log',
 }
 
 
@@ -292,6 +294,32 @@ WP_TOOLS_SCHEMA = [
                 'action': {'type': 'string', 'enum': ['activate', 'deactivate']},
             },
             'required': ['plugin_search_or_slug', 'action'],
+        },
+    },
+    {
+        'type': 'function',
+        'name': 'wp_recent_changes',
+        'description': 'Consulta retroactiva de cambios recientes en WordPress (contenido modificado, usuarios creados y archivos modificados en temas/plugins). Solo lectura.',
+        'parameters': {
+            'type': 'object',
+            'properties': {
+                'days': {'type': 'integer', 'description': 'Dias hacia atras (1 a 30, defecto 7).'},
+                'limit': {'type': 'integer', 'description': 'Maximo por categoria (1 a 50, defecto 20).'},
+                'include_files': {'type': 'boolean', 'description': 'Incluir escaneo de mtime en temas/plugins.'},
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'name': 'wp_get_activity_log',
+        'description': 'Consulta la bitacora de auditoria en tiempo real de Ayrton Center (ediciones, plugins/temas, usuarios, logins y opciones criticas). Solo lectura.',
+        'parameters': {
+            'type': 'object',
+            'properties': {
+                'days': {'type': 'integer', 'description': 'Dias hacia atras (1 a 90, defecto 7).'},
+                'category': {'type': 'string', 'enum': ['all', 'content', 'plugins', 'users', 'auth', 'options']},
+                'limit': {'type': 'integer', 'description': 'Maximo de eventos (1 a 100, defecto 40).'},
+            },
         },
     },
 ]
