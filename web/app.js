@@ -3,6 +3,16 @@ const content = document.querySelector('#content');
 const error = document.querySelector('#error');
 const names = {mike:'Mike',usbestroofing:'US Best Roofing',centrotai:'Centro TAI',pacific:'Pacific',gabriels:'Gabriels'};
 const escapeHtml = s => String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function renderSidebar(agents) {
+  if(!Array.isArray(agents)||!agents.length)return;
+  agents.forEach(a=>{names[a.id]=a.name;});
+  const wpBox=document.querySelector('#nav-wordpress');
+  const vcBox=document.querySelector('#nav-vercel');
+  if(wpBox)wpBox.innerHTML=agents.filter(a=>a.kind==='wordpress').map(a=>`<button data-chat="${escapeHtml(a.id)}">${escapeHtml(a.name)}</button>`).join('');
+  if(vcBox)vcBox.innerHTML=agents.filter(a=>a.kind==='vercel').map(a=>`<button data-chat="${escapeHtml(a.id)}">${escapeHtml(a.name)}</button>`).join('');
+  document.querySelectorAll('aside [data-chat]').forEach(b=>b.addEventListener('click',()=>chat(b.dataset.chat)));
+  select();
+}
 async function api(path, options={}) {
   const response = await fetch(path,{...options, headers:{'Content-Type':'application/json','X-Mike-Request':'1',...options.headers}});
   if (!response.ok) throw new Error(response.status===409?'Ya hay una respuesta en curso en este chat. Esperá antes de enviar.':response.status===401?'Sesión no autorizada. Recargá e ingresá tus credenciales.':'No se pudo completar la consulta. Revisá la conexión y el estado del backend.');
@@ -18,6 +28,7 @@ async function view(tab) {
   content.textContent='Consultando…';
   try {
     const status=await api('/api/status');if(ticket!==generation)return;
+    renderSidebar(status.agents);
     if(tab==='Resumen') {
       const check=status.latest_check, age=check ? Date.now()-Date.parse(check.checked_at) : null;
       const label=!check?'Sin mediciones':age>30*60*1000?'Medición vencida':check.status==='ok'?'Respondió':check.status==='redirect'?'Redirección':'Revisar conexión';
@@ -25,7 +36,31 @@ async function view(tab) {
       content.innerHTML=`<div class="stats"><div class="card"><small>POSTGRESQL</small><div class="value">Conectado</div><small>Historial central de conversaciones</small></div><div class="card"><small>SITIO PILOTO</small><div class="value">${label}</div><small>${detail}</small></div><div class="card"><small>MONITOREO</small><div class="value">${status.monitoring==='enabled'?'Activado':'Desactivado'}</div><small>Consulta HTTP cada ${status.scan_interval_minutes} min</small></div></div><section class="card"><div class="row"><div><h2>US Best Roofing</h2><p class="muted">WordPress · DigitalOcean · SSH sin conectar</p></div><button id="open-agent">Abrir chat ↗</button></div></section><section class="card"><h2>Vos decidís</h2><p>El ejecutor está deshabilitado. El chat no autoriza ni ejecuta acciones.</p></section>`;
     }
     else if(tab==='Memoria')content.innerHTML='<section class="card"><h2>Historial persistente</h2><p>Los mensajes de Mike y US Best Roofing se guardan separados en PostgreSQL. Abrí cada conversación para consultar los últimos 100 mensajes.</p><p>La memoria de incidentes, resúmenes y acciones se implementará con sus respectivos servicios. Con OpenAI configurado, cada envío comparte hasta 40 mensajes recientes de ese chat (máximo 24.000 caracteres) para generar una respuesta. No hay búsqueda en todo el archivo ni memoria semántica todavía.</p></section>';
-    else if(tab==='Configuración')content.innerHTML=`<section class="card"><h2>Conexiones</h2><p>PostgreSQL: conectado<br>OpenAI: ${status.ai==='configured'?'configurado; se verifica al enviar':'sin configurar'}<br>Telegram: sin conectar<br>SSH WordPress (solo lectura): ${status.ssh==='read_only'?'activo ('+escapeHtml((status.ssh_sites||[]).map(s=>names[s]||s).join(', '))+')':'sin conectar'}<br>Monitoreo HTTP: ${status.monitoring==='enabled'?'activado':'desactivado'}<br>WordPress Bridge: ${(status.wp_sites||[]).length?escapeHtml((status.wp_sites||[]).map(s=>names[s]||s).join(', ')):'sin configurar'}<br>GitHub / Vercel GitOps: ${(status.git_sites||[]).length?escapeHtml((status.git_sites||[]).map(s=>names[s]||s).join(', ')):'sin configurar'}</p><p>Las credenciales se configuran en Easypanel, nunca en este chat.</p></section>`;
+    else if(tab==='Configuración'){
+      const siteRows=(status.agents||[]).filter(a=>a.kind!=='system').map(a=>{
+        const prefix=a.id.toUpperCase();
+        const envHint=a.kind==='wordpress'
+          ? `${prefix}_WP_URL + ${prefix}_WP_BRIDGE_SECRET`
+          : `${prefix}_GITHUB_REPO + ${prefix}_GITHUB_TOKEN`;
+        const delBtn=a.custom?`<button data-del-site="${escapeHtml(a.id)}" style="background:#eee;color:#222">Quitar</button>`:'';
+        return `<div class="row" style="padding:8px 0;border-bottom:1px solid #eceeed"><div><strong>${escapeHtml(a.name)}</strong> <span class="muted">(${escapeHtml(a.kind==='wordpress'?'WordPress':'Astro / Vercel')} · ${escapeHtml(a.id)})</span><div class="muted" style="font-size:12px">Variables en Easypanel: <code>${escapeHtml(envHint)}</code></div></div>${delBtn}</div>`;
+      }).join('');
+      content.innerHTML=`<section class="card"><h2>Conexiones</h2><p>PostgreSQL: conectado<br>OpenAI: ${status.ai==='configured'?'configurado; se verifica al enviar':'sin configurar'}<br>Telegram: sin conectar<br>SSH WordPress (solo lectura): ${status.ssh==='read_only'?'activo ('+escapeHtml((status.ssh_sites||[]).map(s=>names[s]||s).join(', '))+')':'sin conectar'}<br>Monitoreo HTTP: ${status.monitoring==='enabled'?'activado':'desactivado'}<br>WordPress Bridge: ${(status.wp_sites||[]).length?escapeHtml((status.wp_sites||[]).map(s=>names[s]||s).join(', ')):'sin configurar'}<br>GitHub / Vercel GitOps: ${(status.git_sites||[]).length?escapeHtml((status.git_sites||[]).map(s=>names[s]||s).join(', ')):'sin configurar'}</p><p>Las credenciales se configuran en Easypanel, nunca en este chat.</p></section><section class="card"><h2>Agregar sitio al panel</h2><p class="muted">Creá un chat nuevo organizado en WordPress o Astro / Vercel sin editar código.</p><form id="add-site-form" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px"><input name="name" placeholder="Nombre (ej: Exodus Remodeling)" maxlength="80" required style="flex:2;min-width:180px;padding:8px;border:1px solid #d7dcd9;border-radius:8px"><input name="id" placeholder="ID corto (ej: exodus)" pattern="[a-z0-9][a-z0-9_-]{1,31}" maxlength="32" required style="flex:1;min-width:140px;padding:8px;border:1px solid #d7dcd9;border-radius:8px"><select name="kind" style="padding:8px;border:1px solid #d7dcd9;border-radius:8px"><option value="wordpress">WordPress</option><option value="vercel">Astro / Vercel</option></select><button type="submit">Agregar sitio</button></form><div style="margin-top:16px">${siteRows}</div></section>`;
+      document.querySelector('#add-site-form')?.addEventListener('submit',async e=>{
+        e.preventDefault();
+        const fd=new FormData(e.currentTarget);
+        error.textContent='';
+        try{
+          await api('/api/sites',{method:'POST',body:JSON.stringify({id:String(fd.get('id')||'').trim().toLowerCase(),name:String(fd.get('name')||'').trim(),kind:String(fd.get('kind')||'wordpress')})});
+          if(ticket===generation)await view('Configuración');
+        }catch(err){if(ticket===generation)error.textContent=err.message;}
+      });
+      content.querySelectorAll('[data-del-site]').forEach(btn=>btn.addEventListener('click',async()=>{
+        btn.disabled=true;error.textContent='';
+        try{await api('/api/sites/'+btn.dataset.delSite,{method:'DELETE'});if(ticket===generation)await view('Configuración');}
+        catch(err){if(ticket===generation){error.textContent=err.message;btn.disabled=false;}}
+      }));
+    }
     else if(tab==='Aprobaciones'){
       const data=await api('/api/proposals');if(ticket!==generation)return;
       const items=data.proposals||[];

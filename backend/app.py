@@ -4,7 +4,9 @@ Optional conversational AI; no SSH, scheduler or execution tools.
 import json
 import logging
 import os
+import re
 import secrets
+from collections import defaultdict
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -25,15 +27,14 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, Field
 
 ROOT = Path(__file__).resolve().parent.parent
-AGENTS = ('mike', 'usbestroofing', 'centrotai', 'pacific', 'gabriels')
-WP_AGENT_ENV_PREFIXES = {'centrotai': 'CENTROTAI', 'usbestroofing': 'USBESTROOFING'}
-GIT_AGENT_ENV_PREFIXES = {'pacific': 'PACIFIC', 'gabriels': 'GABRIELS'}
-SITE_DISPLAY_NAMES = {
-    'centrotai': 'Centro TAI',
-    'usbestroofing': 'US Best Roofing',
-    'pacific': 'Pacific',
-    'gabriels': 'Gabriels',
-}
+SITE_ID_RE = re.compile(r'^[a-z0-9][a-z0-9_-]{1,31}$')
+DEFAULT_SITES = (
+    {'id': 'usbestroofing', 'name': 'US Best Roofing', 'kind': 'wordpress'},
+    {'id': 'centrotai', 'name': 'Centro TAI', 'kind': 'wordpress'},
+    {'id': 'pacific', 'name': 'Pacific', 'kind': 'vercel'},
+    {'id': 'gabriels', 'name': 'Gabriels', 'kind': 'vercel'},
+)
+SITE_DISPLAY_NAMES = {s['id']: s['name'] for s in DEFAULT_SITES}
 
 @dataclass(frozen=True)
 class Settings:
@@ -52,41 +53,65 @@ class Settings:
         values = [os.environ.get(k, '') for k in ('DATABASE_URL', 'ADMIN_USERNAME', 'ADMIN_PASSWORD')]
         if not all(values) or len(values[2]) < 24:
             raise RuntimeError('Set DATABASE_URL, ADMIN_USERNAME and ADMIN_PASSWORD (24+ characters).')
+
+        def display_name(site_id, prefix):
+            custom = os.environ.get(f'{prefix}_SITE_NAME', '').strip()
+            return custom or SITE_DISPLAY_NAMES.get(site_id, prefix.replace('_', ' ').title())
+
         wp_sites = {}
+        for key in list(os.environ.keys()):
+            if key.endswith('_WP_URL'):
+                prefix = key[:-len('_WP_URL')]
+                site_id = prefix.lower()
+                if not prefix or site_id == 'mike' or not SITE_ID_RE.match(site_id):
+                    continue
+                url = os.environ.get(key, '').strip().rstrip('/')
+                secret = os.environ.get(f'{prefix}_WP_BRIDGE_SECRET', '').strip()
+                if url and secret:
+                    wp_sites[site_id] = {'url': url, 'bridge_secret': secret, 'name': display_name(site_id, prefix)}
+
         ssh_sites = {}
-        for site_id, prefix in WP_AGENT_ENV_PREFIXES.items():
-            url = os.environ.get(f'{prefix}_WP_URL', '').strip().rstrip('/')
-            secret = os.environ.get(f'{prefix}_WP_BRIDGE_SECRET', '').strip()
-            if url and secret:
-                wp_sites[site_id] = {'url': url, 'bridge_secret': secret, 'name': SITE_DISPLAY_NAMES.get(site_id, site_id)}
-            ssh_host = os.environ.get(f'{prefix}_SSH_HOST', '').strip()
-            ssh_user = os.environ.get(f'{prefix}_SSH_USER', '').strip()
-            ssh_key = os.environ.get(f'{prefix}_SSH_KEY', '').strip()
-            ssh_host_key = os.environ.get(f'{prefix}_SSH_HOST_KEY', '').strip()
-            ssh_root = os.environ.get(f'{prefix}_SSH_ROOT', '/var/www/html').strip()
-            if ssh_host and ssh_user and ssh_key and ssh_host_key:
-                ssh_sites[site_id] = {
-                    'host': ssh_host,
-                    'port': int(os.environ.get(f'{prefix}_SSH_PORT', '22') or '22'),
-                    'username': ssh_user,
-                    'private_key': ssh_key,
-                    'host_key': ssh_host_key,
-                    'root_path': ssh_root,
-                    'name': SITE_DISPLAY_NAMES.get(site_id, site_id),
-                }
+        for key in list(os.environ.keys()):
+            if key.endswith('_SSH_HOST'):
+                prefix = key[:-len('_SSH_HOST')]
+                site_id = prefix.lower()
+                if not prefix or site_id == 'mike' or not SITE_ID_RE.match(site_id):
+                    continue
+                ssh_host = os.environ.get(key, '').strip()
+                ssh_user = os.environ.get(f'{prefix}_SSH_USER', '').strip()
+                ssh_key = os.environ.get(f'{prefix}_SSH_KEY', '').strip()
+                ssh_host_key = os.environ.get(f'{prefix}_SSH_HOST_KEY', '').strip()
+                ssh_root = os.environ.get(f'{prefix}_SSH_ROOT', '/var/www/html').strip()
+                if ssh_host and ssh_user and ssh_key and ssh_host_key:
+                    ssh_sites[site_id] = {
+                        'host': ssh_host,
+                        'port': int(os.environ.get(f'{prefix}_SSH_PORT', '22') or '22'),
+                        'username': ssh_user,
+                        'private_key': ssh_key,
+                        'host_key': ssh_host_key,
+                        'root_path': ssh_root,
+                        'name': display_name(site_id, prefix),
+                    }
+
         git_sites = {}
-        for site_id, prefix in GIT_AGENT_ENV_PREFIXES.items():
-            repo = os.environ.get(f'{prefix}_GITHUB_REPO', '').strip()
-            gh_token = os.environ.get(f'{prefix}_GITHUB_TOKEN', '').strip()
-            if repo and gh_token:
-                git_sites[site_id] = {
-                    'repo': repo,
-                    'github_token': gh_token,
-                    'branch': os.environ.get(f'{prefix}_GITHUB_BRANCH', 'main').strip() or 'main',
-                    'vercel_token': os.environ.get(f'{prefix}_VERCEL_TOKEN', '').strip(),
-                    'vercel_project_id': os.environ.get(f'{prefix}_VERCEL_PROJECT_ID', '').strip(),
-                    'name': SITE_DISPLAY_NAMES.get(site_id, site_id),
-                }
+        for key in list(os.environ.keys()):
+            if key.endswith('_GITHUB_REPO'):
+                prefix = key[:-len('_GITHUB_REPO')]
+                site_id = prefix.lower()
+                if not prefix or site_id == 'mike' or not SITE_ID_RE.match(site_id):
+                    continue
+                repo = os.environ.get(key, '').strip()
+                gh_token = os.environ.get(f'{prefix}_GITHUB_TOKEN', '').strip()
+                if repo and gh_token:
+                    git_sites[site_id] = {
+                        'repo': repo,
+                        'github_token': gh_token,
+                        'branch': os.environ.get(f'{prefix}_GITHUB_BRANCH', 'main').strip() or 'main',
+                        'vercel_token': os.environ.get(f'{prefix}_VERCEL_TOKEN', '').strip(),
+                        'vercel_project_id': os.environ.get(f'{prefix}_VERCEL_PROJECT_ID', '').strip(),
+                        'name': display_name(site_id, prefix),
+                    }
+
         return cls(*values, api_key=os.environ.get("OPENAI_API_KEY", "").strip(),
                    model=os.environ.get("OPENAI_MODEL", "gpt-5-mini").strip(),
                    monitor_enabled=os.environ.get('MONITOR_ENABLED', '').lower() == 'true',
@@ -106,16 +131,22 @@ class Store:
         with self.connect() as conn:
             # Serializes initialization when two instances start simultaneously.
             conn.execute('SELECT pg_advisory_xact_lock(87319451)')
+            conn.execute('''CREATE TABLE IF NOT EXISTS sites (
+                id text PRIMARY KEY CHECK(id ~ '^[a-z0-9][a-z0-9_-]{1,31}$' AND id <> 'mike'),
+                name text NOT NULL CHECK(length(name) BETWEEN 1 AND 80),
+                kind text NOT NULL CHECK(kind IN ('wordpress','vercel')),
+                created_at timestamptz NOT NULL DEFAULT now()
+            )''')
             conn.execute('''CREATE TABLE IF NOT EXISTS conversation_messages (
                 id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-                agent_id text NOT NULL CHECK(agent_id IN ('mike','usbestroofing')),
+                agent_id text NOT NULL,
                 role text NOT NULL CHECK(role IN ('user','system')),
                 content text NOT NULL CHECK(length(content) BETWEEN 1 AND 8000),
                 created_at timestamptz NOT NULL DEFAULT now()
             )''')
             # Upgrade the original constraints transactionally without deleting history.
             conn.execute('ALTER TABLE conversation_messages DROP CONSTRAINT IF EXISTS conversation_messages_agent_id_check')
-            conn.execute("ALTER TABLE conversation_messages ADD CONSTRAINT conversation_messages_agent_id_check CHECK(agent_id IN ('mike','usbestroofing','centrotai','pacific','gabriels'))")
+            conn.execute("ALTER TABLE conversation_messages ADD CONSTRAINT conversation_messages_agent_id_check CHECK(agent_id ~ '^[a-z0-9][a-z0-9_-]{1,31}$')")
             conn.execute('ALTER TABLE conversation_messages DROP CONSTRAINT IF EXISTS conversation_messages_role_check')
             conn.execute("ALTER TABLE conversation_messages ADD CONSTRAINT conversation_messages_role_check CHECK(role IN ('user','system','assistant'))")
             conn.execute('''CREATE INDEX IF NOT EXISTS messages_agent_id_idx
@@ -126,7 +157,7 @@ class Store:
                 status text NOT NULL, http_status integer, duration_ms integer NOT NULL)''')
             conn.execute('''CREATE TABLE IF NOT EXISTS proposals (
                 id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-                site_id text NOT NULL CHECK(site_id IN ('usbestroofing','centrotai','pacific','gabriels')),
+                site_id text NOT NULL,
                 tool_name text NOT NULL,
                 params_json jsonb NOT NULL DEFAULT '{}'::jsonb,
                 params_hash text NOT NULL,
@@ -138,7 +169,7 @@ class Store:
             conn.execute('''CREATE INDEX IF NOT EXISTS proposals_status_idx
                 ON proposals(status, id DESC)''')
             conn.execute('ALTER TABLE proposals DROP CONSTRAINT IF EXISTS proposals_site_id_check')
-            conn.execute("ALTER TABLE proposals ADD CONSTRAINT proposals_site_id_check CHECK(site_id IN ('usbestroofing','centrotai','pacific','gabriels'))")
+            conn.execute("ALTER TABLE proposals ADD CONSTRAINT proposals_site_id_check CHECK(site_id ~ '^[a-z0-9][a-z0-9_-]{1,31}$')")
 
     def check_if_due(self):
         # Transaction lock makes the decision and check exclusive across workers.
@@ -219,8 +250,27 @@ class Store:
                 RETURNING id,site_id,tool_name,params_json,params_hash,status,expires_at,created_at''',
                 (proposal_id,)).fetchone()
 
+    def list_sites(self):
+        with self.connect() as conn:
+            return conn.execute('SELECT id,name,kind,created_at FROM sites ORDER BY created_at ASC, id ASC').fetchall()
+
+    def upsert_site(self, site_id, name, kind):
+        with self.connect() as conn:
+            return conn.execute('''INSERT INTO sites(id,name,kind) VALUES (%s,%s,%s)
+                ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, kind=EXCLUDED.kind
+                RETURNING id,name,kind,created_at''', (site_id, name, kind)).fetchone()
+
+    def delete_site(self, site_id):
+        with self.connect() as conn:
+            return conn.execute('DELETE FROM sites WHERE id=%s RETURNING id', (site_id,)).fetchone()
+
 class Message(BaseModel):
     content: str = Field(min_length=1, max_length=8000)
+
+class SiteCreate(BaseModel):
+    id: str = Field(min_length=2, max_length=32)
+    name: str = Field(min_length=1, max_length=80)
+    kind: str = Field(pattern='^(wordpress|vercel)$')
 
 
 def create_app(settings=None, store=None, responder=None):
@@ -229,7 +279,8 @@ def create_app(settings=None, store=None, responder=None):
     security = HTTPBasic()
     responder = responder or (Responder(settings.api_key, settings.model) if settings.api_key else None)
     # Docker runs one worker. Reject simultaneous sends instead of interleaving turns.
-    chat_locks = {agent: Lock() for agent in AGENTS}
+    chat_locks = defaultdict(Lock)
+    locks_guard = Lock()
 
     @asynccontextmanager
     async def lifespan(app):
@@ -307,6 +358,30 @@ def create_app(settings=None, store=None, responder=None):
     def script():
         return FileResponse(ROOT/'web'/'app.js', media_type='text/javascript')
 
+    def all_agents():
+        catalog = {'mike': {'id': 'mike', 'name': 'Mike', 'kind': 'system', 'custom': False}}
+        for s in DEFAULT_SITES:
+            catalog[s['id']] = {'id': s['id'], 'name': s['name'], 'kind': s['kind'], 'custom': False}
+        for sid, cfg in settings.wp_sites.items():
+            if sid not in catalog:
+                catalog[sid] = {'id': sid, 'name': cfg.get('name', sid), 'kind': 'wordpress', 'custom': False}
+        for sid, cfg in settings.ssh_sites.items():
+            if sid not in catalog:
+                catalog[sid] = {'id': sid, 'name': cfg.get('name', sid), 'kind': 'wordpress', 'custom': False}
+        for sid, cfg in settings.git_sites.items():
+            if sid not in catalog:
+                catalog[sid] = {'id': sid, 'name': cfg.get('name', sid), 'kind': 'vercel', 'custom': False}
+        list_fn = getattr(store, 'list_sites', None)
+        if list_fn:
+            for row in list_fn():
+                catalog[row['id']] = {
+                    'id': row['id'],
+                    'name': row['name'],
+                    'kind': row['kind'],
+                    'custom': row['id'] not in SITE_DISPLAY_NAMES,
+                }
+        return list(catalog.values())
+
     @app.get('/api/status', dependencies=[Depends(owner)])
     def status():
         store.ready()
@@ -319,15 +394,37 @@ def create_app(settings=None, store=None, responder=None):
                 'wp_sites':sorted(settings.wp_sites.keys()),
                 'ssh_sites':sorted(settings.ssh_sites.keys()),
                 'git_sites':sorted(settings.git_sites.keys()),
-                'agents':[{'id':'mike','name':'Mike'},
-                    {'id':'usbestroofing','name':'US Best Roofing'},
-                    {'id':'centrotai','name':'Centro TAI'},
-                    {'id':'pacific','name':'Pacific'},
-                    {'id':'gabriels','name':'Gabriels'}]}
+                'agents':all_agents()}
 
     def check_agent(agent):
-        if agent not in AGENTS:
+        if not any(a['id'] == agent for a in all_agents()):
             raise HTTPException(404, 'Unknown agent')
+
+    @app.post('/api/sites', dependencies=[Depends(owner)], status_code=201)
+    def add_site(body: SiteCreate):
+        site_id = body.id.strip().lower()
+        name = body.name.strip()
+        if site_id == 'mike' or not SITE_ID_RE.match(site_id):
+            raise HTTPException(422, 'ID de sitio invalido (usa 2-32 letras minusculas, numeros, guiones).')
+        if not name:
+            raise HTTPException(422, 'Nombre requerido.')
+        upsert_fn = getattr(store, 'upsert_site', None)
+        if not upsert_fn:
+            raise HTTPException(501, 'Site registry not available')
+        site = upsert_fn(site_id, name, body.kind)
+        return {'site': site}
+
+    @app.delete('/api/sites/{site_id}', dependencies=[Depends(owner)])
+    def remove_site(site_id: str):
+        if site_id in SITE_DISPLAY_NAMES or site_id == 'mike':
+            raise HTTPException(400, 'Los sitios base no se eliminan.')
+        delete_fn = getattr(store, 'delete_site', None)
+        if not delete_fn:
+            raise HTTPException(501, 'Site registry not available')
+        deleted = delete_fn(site_id)
+        if not deleted:
+            raise HTTPException(404, 'Sitio no encontrado')
+        return {'deleted': deleted['id']}
 
     @app.get('/api/agents/{agent}/messages', dependencies=[Depends(owner)])
     def messages(agent: str):
@@ -340,7 +437,8 @@ def create_app(settings=None, store=None, responder=None):
         text = body.content.strip()
         if not text:
             raise HTTPException(422, 'Message cannot be blank')
-        lock = chat_locks[agent]
+        with locks_guard:
+            lock = chat_locks[agent]
         if not lock.acquire(blocking=False):
             raise HTTPException(409, 'This chat already has a response in progress')
         try:
