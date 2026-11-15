@@ -564,6 +564,24 @@ def create_app(settings=None, store=None, responder=None):
             if responder is not None:
                 try:
                     if isinstance(responder, Responder):
+                        coord_ctx = None
+                        if agent == 'mike':
+                            def _get_lock(sid):
+                                with locks_guard:
+                                    return chat_locks[sid]
+                            coord_ctx = {
+                                'sites': [a for a in all_agents() if a['id'] != 'mike'],
+                                'wp_sites': settings.wp_sites,
+                                'ssh_sites': settings.ssh_sites,
+                                'git_sites': settings.git_sites,
+                                'get_checks': getattr(store, 'latest_checks_by_site', None),
+                                'get_incidents': getattr(store, 'recent_incidents', None),
+                                'get_proposals': (lambda: store.list_proposals(limit=25)) if hasattr(store, 'list_proposals') else None,
+                                'get_messages': store.messages,
+                                'append_message': store.append,
+                                'proposal_creator': getattr(store, 'create_proposal', None),
+                                'get_lock': _get_lock,
+                            }
                         answer = responder.reply(
                             agent,
                             store.messages(agent),
@@ -571,6 +589,7 @@ def create_app(settings=None, store=None, responder=None):
                             proposal_creator=getattr(store, 'create_proposal', None),
                             ssh_config=settings.ssh_sites.get(agent),
                             git_config=settings.git_sites.get(agent),
+                            coordinator_ctx=coord_ctx,
                         )
                     else:
                         answer = responder.reply(agent, store.messages(agent))

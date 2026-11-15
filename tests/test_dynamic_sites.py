@@ -124,3 +124,50 @@ def test_bilingual_ui_assets_served():
         assert "I18N" in js
         assert "en-US" in js
         assert "view('Resumen')" in js
+
+
+def test_mike_coordinator_tools(monkeypatch):
+    from backend.ai import Responder
+    settings = Settings('unused', 'owner', 'a-long-test-only-password-123456')
+    store = DynamicMemoryStore()
+    store.upsert_site('exodus', 'Exodus', 'wordpress', 'https://exodusremodeling.com')
+    store.record_check('exodus', 'https://exodusremodeling.com')
+    store.append('exodus', 'El sitio esta online sin errores', role='assistant')
+
+    proposals = []
+    def fake_create_proposal(site_id, tool_name, args):
+        p = {'id': len(proposals) + 1, 'site_id': site_id, 'tool_name': tool_name, 'params_json': args, 'status': 'pending', 'expires_at': '2030-01-01T00:00:00Z'}
+        proposals.append(p)
+        return p
+
+    responder = Responder('sk-test', 'gpt-4o-mini')
+    calls = []
+    def fake_call(instructions, input_items, tools):
+        calls.append([t['name'] for t in tools])
+        if len(calls) == 1:
+            return {'output': [{'type': 'function_call', 'call_id': 'c1', 'name': 'mike_overview', 'arguments': '{}'}]}
+        if len(calls) == 2:
+            return {'output': [{'type': 'function_call', 'call_id': 'c2', 'name': 'mike_read_agent_chat', 'arguments': '{"site_id":"exodus"}'}]}
+        if len(calls) == 3:
+            return {'output': [{'type': 'function_call', 'call_id': 'c3', 'name': 'mike_propose_site_action', 'arguments': '{"site_id":"exodus","tool_name":"wp_create_backup","args_json":"{}"}'}]}
+        return {'output': [{'type': 'message', 'role': 'assistant', 'content': [{'type': 'output_text', 'text': 'Informe completo verificado.'}]}]}
+
+    monkeypatch.setattr(responder, '_call_responses', fake_call)
+    ctx = {
+        'sites': [{'id': 'exodus', 'name': 'Exodus', 'kind': 'wordpress', 'url': 'https://exodusremodeling.com'}],
+        'wp_sites': {},
+        'ssh_sites': {},
+        'git_sites': {},
+        'get_checks': store.latest_checks_by_site,
+        'get_incidents': store.recent_incidents,
+        'get_proposals': lambda: proposals,
+        'get_messages': store.messages,
+        'append_message': store.append,
+        'proposal_creator': fake_create_proposal,
+        'get_lock': None,
+    }
+    reply = responder.reply('mike', [{'role': 'user', 'content': 'Dame informe y crea backup en exodus'}], coordinator_ctx=ctx)
+    assert reply == 'Informe completo verificado.'
+    assert 'mike_overview' in calls[0]
+    assert 'mike_ask_agent' in calls[0]
+    assert len(proposals) == 1 and proposals[0]['site_id'] == 'exodus' and proposals[0]['tool_name'] == 'wp_create_backup'
