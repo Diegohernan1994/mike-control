@@ -7,7 +7,13 @@ import io
 import posixpath
 import shlex
 
-import paramiko
+
+def _paramiko():
+    try:
+        import paramiko
+        return paramiko
+    except ImportError:
+        raise SSHError('Modulo paramiko no instalado en el servidor.', 500)
 
 SSH_READ_ONLY_TOOLS = {
     'ssh_list_dir',
@@ -67,6 +73,7 @@ def sanitize_ssh_rel_path(root_path, rel_path='', allow_empty=True):
 
 
 def _load_private_key(key_pem):
+    paramiko = _paramiko()
     key_text = (key_pem or '').replace('\\n', '\n').strip()
     if not key_text:
         raise SSHError('Falta llave privada SSH en variables de entorno.', 400)
@@ -80,6 +87,7 @@ def _load_private_key(key_pem):
 
 def _load_host_key(host_key_str):
     """Parses '<key-type> <base64>' into a Paramiko PKey for strict host pinning."""
+    paramiko = _paramiko()
     parts = (host_key_str or '').strip().split()
     if len(parts) < 2:
         raise SSHError('Falta huella/clave publica del host SSH (verificacion obligatoria).', 400)
@@ -95,6 +103,7 @@ def _load_host_key(host_key_str):
 
 
 def _run_readonly_command(ssh_config, command, timeout=20, max_bytes=32768):
+    paramiko = _paramiko()
     host = (ssh_config or {}).get('host', '').strip()
     port = int((ssh_config or {}).get('port') or 22)
     username = (ssh_config or {}).get('username', '').strip()
