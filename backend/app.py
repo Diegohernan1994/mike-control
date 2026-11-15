@@ -137,9 +137,11 @@ class Store:
                 name text NOT NULL CHECK(length(name) BETWEEN 1 AND 80),
                 kind text NOT NULL CHECK(kind IN ('wordpress','vercel')),
                 url text,
+                hidden boolean NOT NULL DEFAULT false,
                 created_at timestamptz NOT NULL DEFAULT now()
             )''')
             conn.execute('ALTER TABLE sites ADD COLUMN IF NOT EXISTS url text')
+            conn.execute('ALTER TABLE sites ADD COLUMN IF NOT EXISTS hidden boolean NOT NULL DEFAULT false')
             conn.execute('''CREATE TABLE IF NOT EXISTS conversation_messages (
                 id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
                 agent_id text NOT NULL,
@@ -282,18 +284,29 @@ class Store:
 
     def list_sites(self):
         with self.connect() as conn:
-            return conn.execute('SELECT id,name,kind,url,created_at FROM sites ORDER BY created_at ASC, id ASC').fetchall()
+            return conn.execute('SELECT id,name,kind,url,hidden,created_at FROM sites ORDER BY created_at ASC, id ASC').fetchall()
 
     def upsert_site(self, site_id, name, kind, url=None):
         clean_url = (url or '').strip() or None
         with self.connect() as conn:
-            return conn.execute('''INSERT INTO sites(id,name,kind,url) VALUES (%s,%s,%s,%s)
-                ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, kind=EXCLUDED.kind, url=COALESCE(EXCLUDED.url, sites.url)
+            return conn.execute('''INSERT INTO sites(id,name,kind,url,hidden) VALUES (%s,%s,%s,%s,false)
+                ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, kind=EXCLUDED.kind, url=COALESCE(EXCLUDED.url, sites.url), hidden=false
                 RETURNING id,name,kind,url,created_at''', (site_id, name, kind, clean_url)).fetchone()
+
+    def hide_site(self, site_id, name, kind):
+        with self.connect() as conn:
+            return conn.execute('''INSERT INTO sites(id,name,kind,hidden) VALUES (%s,%s,%s,true)
+                ON CONFLICT (id) DO UPDATE SET hidden=true
+                RETURNING id''', (site_id, name, kind)).fetchone()
 
     def delete_site(self, site_id):
         with self.connect() as conn:
             return conn.execute('DELETE FROM sites WHERE id=%s RETURNING id', (site_id,)).fetchone()
+
+    def clear_messages(self, agent):
+        with self.connect() as conn:
+            cur = conn.execute('DELETE FROM conversation_messages WHERE agent_id=%s', (agent,))
+            return cur.rowcount
 
 class Message(BaseModel):
     content: str = Field(min_length=1, max_length=8000)
@@ -411,23 +424,33 @@ def create_app(settings=None, store=None, responder=None):
             catalog[s['id']] = {'id': s['id'], 'name': s['name'], 'kind': s['kind'], 'custom': False}
         for sid, cfg in settings.wp_sites.items():
             if sid not in catalog:
-                catalog[sid] = {'id': sid, 'name': cfg.get('name', sid), 'kind': 'wordpress', 'custom': False}
+                catalog[sid] = {'id': sid, 'name': cfg.get('name', sid), 'kind': 'wordpress', 'url': cfg.get('url', ''), 'custom': False}
+            elif cfg.get('url'):
+                catalog[sid]['url'] = cfg['url']
         for sid, cfg in settings.ssh_sites.items():
             if sid not in catalog:
                 catalog[sid] = {'id': sid, 'name': cfg.get('name', sid), 'kind': 'wordpress', 'custom': False}
         for sid, cfg in settings.git_sites.items():
             if sid not in catalog:
-                catalog[sid] = {'id': sid, 'name': cfg.get('name', sid), 'kind': 'vercel', 'custom': False}
+                catalog[sid] = {'id': sid, 'name': cfg.get('name', sid), 'kind': 'vercel', 'url': cfg.get('site_url', ''), 'custom': False}
+            elif cfg.get('site_url'):
+                catalog[sid]['url'] = cfg['site_url']
         list_fn = getattr(store, 'list_sites', None)
+        hidden_ids = set()
         if list_fn:
             for row in list_fn():
+                if row.get('hidden'):
+                    hidden_ids.add(row['id'])
+                    continue
+                existing_url = catalog.get(row['id'], {}).get('url', '')
                 catalog[row['id']] = {
                     'id': row['id'],
                     'name': row['name'],
                     'kind': row['kind'],
+                    'url': row.get('url') or existing_url,
                     'custom': row['id'] not in SITE_DISPLAY_NAMES,
                 }
-        return list(catalog.values())
+        return [a for sid, a in catalog.items() if sid not in hidden_ids]
 
     @app.get('/api/status', dependencies=[Depends(owner)])
     def status():
@@ -478,20 +501,52 @@ def create_app(settings=None, store=None, responder=None):
 
     @app.delete('/api/sites/{site_id}', dependencies=[Depends(owner)])
     def remove_site(site_id: str):
-        if site_id in SITE_DISPLAY_NAMES or site_id == 'mike':
-            raise HTTPException(400, 'Los sitios base no se eliminan.')
+        if site_id == 'mike':
+            raise HTTPException(400, 'Mike no se puede eliminar.')
+        agents_map = {a['id']: a for a in all_agents()}
+        target = agents_map.get(site_id)
+        if not target:
+            raise HTTPException(404, 'Sitio no encontrado')
+        is_env_or_default = (
+            site_id in SITE_DISPLAY_NAMES
+            or site_id in settings.wp_sites
+            or site_id in settings.ssh_sites
+            or site_id in settings.git_sites
+        )
+        if is_env_or_default:
+            hide_fn = getattr(store, 'hide_site', None)
+            if not hide_fn:
+                raise HTTPException(501, 'Site registry not available')
+            hide_fn(site_id, target['name'], target['kind'])
+            return {'deleted': site_id, 'hidden': True}
         delete_fn = getattr(store, 'delete_site', None)
         if not delete_fn:
             raise HTTPException(501, 'Site registry not available')
         deleted = delete_fn(site_id)
         if not deleted:
             raise HTTPException(404, 'Sitio no encontrado')
-        return {'deleted': deleted['id']}
+        return {'deleted': deleted['id'], 'hidden': False}
 
     @app.get('/api/agents/{agent}/messages', dependencies=[Depends(owner)])
     def messages(agent: str):
         check_agent(agent)
         return {'messages':store.messages(agent)}
+
+    @app.delete('/api/agents/{agent}/messages', dependencies=[Depends(owner)])
+    def clear_messages(agent: str):
+        check_agent(agent)
+        clear_fn = getattr(store, 'clear_messages', None)
+        if not clear_fn:
+            raise HTTPException(501, 'Clear chat not available')
+        with locks_guard:
+            lock = chat_locks[agent]
+        if not lock.acquire(blocking=False):
+            raise HTTPException(409, 'This chat already has a response in progress')
+        try:
+            removed = clear_fn(agent)
+            return {'cleared': agent, 'deleted_count': removed}
+        finally:
+            lock.release()
 
     @app.post('/api/agents/{agent}/messages', dependencies=[Depends(owner)], status_code=201)
     def append(agent: str, body: Message):

@@ -52,8 +52,8 @@ async function view(tab) {
         const envHint=a.kind==='wordpress'
           ? `${prefix}_WP_URL + ${prefix}_WP_BRIDGE_SECRET`
           : `${prefix}_GITHUB_REPO + ${prefix}_GITHUB_TOKEN`;
-        const delBtn=a.custom?`<button data-del-site="${escapeHtml(a.id)}" style="background:#eee;color:#222">Quitar</button>`:'';
-        return `<div class="row" style="padding:8px 0;border-bottom:1px solid #eceeed"><div><strong>${escapeHtml(a.name)}</strong> <span class="muted">(${escapeHtml(a.kind==='wordpress'?'WordPress':'Astro / Vercel')} · ${escapeHtml(a.id)})</span><div class="muted" style="font-size:12px">Variables en Easypanel: <code>${escapeHtml(envHint)}</code></div></div>${delBtn}</div>`;
+        const actions=`<div style="display:flex;gap:6px"><button data-edit-site="${escapeHtml(a.id)}" style="background:#eee;color:#222">Editar</button><button data-del-site="${escapeHtml(a.id)}" style="background:#eee;color:#222">Quitar</button></div>`;
+        return `<div class="row" style="padding:8px 0;border-bottom:1px solid #eceeed"><div><strong>${escapeHtml(a.name)}</strong> <span class="muted">(${escapeHtml(a.kind==='wordpress'?'WordPress':'Astro / Vercel')} · ${escapeHtml(a.id)})</span><div class="muted" style="font-size:12px">Variables en Easypanel: <code>${escapeHtml(envHint)}</code>${a.url?' · Monitoreo: '+escapeHtml(a.url):''}</div></div>${actions}</div>`;
       }).join('');
       content.innerHTML=`<section class="card"><h2>Conexiones</h2><p>PostgreSQL: conectado<br>OpenAI: ${status.ai==='configured'?'configurado; se verifica al enviar':'sin configurar'}<br>Telegram: sin conectar<br>SSH WordPress (solo lectura): ${status.ssh==='read_only'?'activo ('+escapeHtml((status.ssh_sites||[]).map(s=>names[s]||s).join(', '))+')':'sin conectar'}<br>Monitoreo HTTP: ${status.monitoring==='enabled'?'activado':'desactivado'}<br>WordPress Bridge: ${(status.wp_sites||[]).length?escapeHtml((status.wp_sites||[]).map(s=>names[s]||s).join(', ')):'sin configurar'}<br>GitHub / Vercel GitOps: ${(status.git_sites||[]).length?escapeHtml((status.git_sites||[]).map(s=>names[s]||s).join(', ')):'sin configurar'}</p><p>Las credenciales se configuran en Easypanel, nunca en este chat.</p></section><section class="card"><h2>Agregar sitio al panel</h2><p class="muted">Creá un chat nuevo organizado en WordPress o Astro / Vercel sin editar código.</p><form id="add-site-form" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px"><input name="name" placeholder="Nombre (ej: Exodus Remodeling)" maxlength="80" required style="flex:2;min-width:160px;padding:8px;border:1px solid #d7dcd9;border-radius:8px"><input name="id" placeholder="ID corto (ej: exodus)" pattern="[a-z0-9][a-z0-9_-]{1,31}" maxlength="32" required style="flex:1;min-width:120px;padding:8px;border:1px solid #d7dcd9;border-radius:8px"><input name="url" type="url" placeholder="URL monitoreo (opcional: https://...)" maxlength="300" style="flex:2;min-width:200px;padding:8px;border:1px solid #d7dcd9;border-radius:8px"><select name="kind" style="padding:8px;border:1px solid #d7dcd9;border-radius:8px"><option value="wordpress">WordPress</option><option value="vercel">Astro / Vercel</option></select><button type="submit">Agregar sitio</button></form><div style="margin-top:16px">${siteRows}</div></section>`;
       document.querySelector('#add-site-form')?.addEventListener('submit',async e=>{
@@ -65,7 +65,19 @@ async function view(tab) {
           if(ticket===generation)await view('Configuración');
         }catch(err){if(ticket===generation)error.textContent=err.message;}
       });
+      content.querySelectorAll('[data-edit-site]').forEach(btn=>btn.addEventListener('click',()=>{
+        const target=(status.agents||[]).find(a=>a.id===btn.dataset.editSite);
+        const form=document.querySelector('#add-site-form');
+        if(!target||!form)return;
+        form.elements.name.value=target.name||'';
+        form.elements.id.value=target.id||'';
+        form.elements.url.value=target.url||'';
+        form.elements.kind.value=target.kind||'wordpress';
+        form.querySelector('button[type="submit"]').textContent='Guardar cambios';
+        form.scrollIntoView({behavior:'smooth',block:'center'});
+      }));
       content.querySelectorAll('[data-del-site]').forEach(btn=>btn.addEventListener('click',async()=>{
+        if(!confirm('¿Quitar este sitio del panel?'))return;
         btn.disabled=true;error.textContent='';
         try{await api('/api/sites/'+btn.dataset.delSite,{method:'DELETE'});if(ticket===generation)await view('Configuración');}
         catch(err){if(ticket===generation){error.textContent=err.message;btn.disabled=false;}}
@@ -111,8 +123,14 @@ async function chat(agent) {
   if(!names[agent])return;
   const ticket=++generation;activeAgent=agent;select();error.textContent='';
   document.querySelector('#title').textContent=names[agent];
-  content.innerHTML='<p class="muted">Historial en PostgreSQL · Respuestas de IA si OpenAI está configurado. Los mensajes no ejecutan órdenes.</p><div id="messages" aria-live="polite">Cargando historial…</div><form class="composer"><textarea aria-label="Mensaje" placeholder="Escribí tu mensaje…" maxlength="8000" required></textarea><button type="submit">Enviar ↑</button></form>';
+  content.innerHTML='<div class="row" style="margin-bottom:8px"><p class="muted" style="margin:0">Historial en PostgreSQL · Respuestas de IA si OpenAI está configurado.</p><button id="clear-chat" type="button" style="background:#eee;color:#222;padding:6px 10px;font-size:12px">Limpiar chat</button></div><div id="messages" aria-live="polite">Cargando historial…</div><form class="composer"><textarea aria-label="Mensaje" placeholder="Escribí tu mensaje…" maxlength="8000" required></textarea><button type="submit">Enviar ↑</button></form>';
   document.querySelector('form').addEventListener('submit',e=>send(e,agent,ticket));
+  document.querySelector('#clear-chat').addEventListener('click',async()=>{
+    if(!confirm('¿Borrar todos los mensajes de este chat?'))return;
+    error.textContent='';
+    try{await api('/api/agents/'+agent+'/messages',{method:'DELETE'});if(ticket===generation)await refresh(agent,ticket);}
+    catch(e){if(ticket===generation)error.textContent=e.message;}
+  });
   await refresh(agent,ticket);
 }
 async function refresh(agent,ticket) {
