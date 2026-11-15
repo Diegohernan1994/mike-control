@@ -72,6 +72,8 @@ def execute_remote_tool(site_url, bridge_secret, tool_name, args=None, timeout=4
         method='POST',
         headers={
             'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'User-Agent': 'MikeControlBridge/1.0',
             'X-Ayrton-Timestamp': timestamp,
             'X-Ayrton-Signature': signature,
         },
@@ -85,7 +87,14 @@ def execute_remote_tool(site_url, bridge_secret, tool_name, args=None, timeout=4
             raise BridgeError('Respuesta invalida del conector WordPress.')
         return data
     except urllib.error.HTTPError as exc:
-        raise BridgeError(f'WordPress Bridge HTTP {exc.code}', exc.code) from None
+        err_code = ''
+        try:
+            err_body = json.loads(exc.read(512))
+            if isinstance(err_body, dict) and err_body.get('code'):
+                err_code = f" ({err_body['code']})"
+        except Exception:
+            pass
+        raise BridgeError(f'WordPress Bridge HTTP {exc.code}{err_code}', exc.code) from None
     except TimeoutError:
         raise BridgeError('Tiempo de espera agotado al conectar con WordPress.', 504) from None
     except urllib.error.URLError:
