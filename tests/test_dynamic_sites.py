@@ -112,3 +112,15 @@ def test_add_and_remove_custom_sites_via_api():
 
         assert c.delete('/api/sites/modernroofing', auth=AUTH, headers=HEADERS).status_code == 200
         assert c.get('/api/agents/modernroofing/messages', auth=AUTH).status_code == 404
+
+
+def test_bilingual_ui_assets_served():
+    settings = Settings('unused', 'owner', 'a-long-test-only-password-123456')
+    with TestClient(create_app(settings, DynamicMemoryStore())) as c:
+        html = c.get('/', auth=AUTH).text
+        assert 'data-lang="es"' in html
+        assert 'data-lang="en"' in html
+        js = c.get('/app.js', auth=AUTH).text
+        assert "I18N" in js
+        assert "en-US" in js
+        assert "view('Resumen')" in js
