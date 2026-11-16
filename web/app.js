@@ -320,10 +320,10 @@ async function view(tab) {
           const siteLabel=escapeHtml(names[p.site_id]||p.site_id);
           const paramsStr=escapeHtml(JSON.stringify(p.params_json||{},null,2));
           const actions=p.status==='pending'
-            ? `<div class="row" style="margin-top:12px;gap:8px;justify-content:flex-start"><button data-approve="${p.id}">${t('approve_exec')}</button><button data-reject="${p.id}" style="background:#eee;color:#222">${t('reject')}</button></div>`
+            ? `<div class="row" style="margin-top:12px;gap:8px;justify-content:flex-start"><button data-approve="${escapeHtml(p.id)}">${t('approve_exec')}</button><button data-reject="${escapeHtml(p.id)}" style="background:#eee;color:#222">${t('reject')}</button></div>`
             : '';
           const resultStr=p.result_json?`<pre style="margin-top:8px;white-space:pre-wrap;font-size:12px;background:#f6f7f6;padding:8px;border-radius:6px">${escapeHtml(JSON.stringify(p.result_json,null,2))}</pre>`:'';
-          return `<section class="card"><div class="row"><div><strong>#${p.id} · ${siteLabel} · ${escapeHtml(p.tool_name)}</strong><div class="muted" style="font-size:12px">${t('status_label')}: ${escapeHtml(p.status)} · ${t('expires_label')}: ${escapeHtml(fmtDate(p.expires_at))}</div></div></div><pre style="margin-top:8px;white-space:pre-wrap;font-size:12px;background:#f6f7f6;padding:8px;border-radius:6px">${paramsStr}</pre>${resultStr}${actions}</section>`;
+          return `<section class="card"><div class="row"><div><strong>#${escapeHtml(p.id)} · ${siteLabel} · ${escapeHtml(p.tool_name)}</strong><div class="muted" style="font-size:12px">${t('status_label')}: ${escapeHtml(p.status)} · ${t('expires_label')}: ${escapeHtml(fmtDate(p.expires_at))}</div></div></div><pre style="margin-top:8px;white-space:pre-wrap;font-size:12px;background:#f6f7f6;padding:8px;border-radius:6px">${paramsStr}</pre>${resultStr}${actions}</section>`;
         }).join('');
         content.querySelectorAll('[data-approve]').forEach(btn=>btn.addEventListener('click',async()=>{
           btn.disabled=true;btn.textContent=t('executing');error.textContent='';
@@ -343,7 +343,6 @@ async function view(tab) {
         ? inc.map(i=>`<section class="card"><strong>${escapeHtml(names[i.site_id]||i.site_id)}</strong> · ${escapeHtml(i.status)} · HTTP ${escapeHtml(i.http_status ?? t('no_response'))} · ${escapeHtml(i.duration_ms)} ms<div class="muted" style="font-size:12px">${escapeHtml(fmtDate(i.checked_at))}</div></section>`).join('')
         : `<section class="card"><h2>${t('no_incidents_title')}</h2><p>${t('no_incidents_desc')}</p></section>`;
     }
-    document.querySelector('#open-agent')?.addEventListener('click',()=>chat('usbestroofing'));
   }catch(e){if(ticket===generation){content.textContent='';error.textContent=e.message;}}
 }
 async function chat(agent) {
@@ -363,7 +362,7 @@ async function chat(agent) {
 async function refresh(agent,ticket) {
   try{const data=await api('/api/agents/'+agent+'/messages');if(ticket!==generation)return;
     const box=document.querySelector('#messages');
-    box.innerHTML=data.messages.length?data.messages.map(m=>`<div class="message">${escapeHtml(m.content)}<span class="date">${m.role==='user'?t('you'):m.role==='assistant'?names[agent]:t('system')} · ${escapeHtml(fmtDate(m.created_at))}</span></div>`).join(''):`<p class="muted">${t('no_messages')}</p>`;box.scrollTop=box.scrollHeight;
+    box.innerHTML=data.messages.length?data.messages.map(m=>`<div class="message">${escapeHtml(m.content)}<span class="date">${m.role==='user'?t('you'):m.role==='assistant'?escapeHtml(names[agent]):t('system')} · ${escapeHtml(fmtDate(m.created_at))}</span></div>`).join(''):`<p class="muted">${t('no_messages')}</p>`;box.scrollTop=box.scrollHeight;
   }catch(e){if(ticket===generation)error.textContent=e.message;}
 }
 async function send(e,agent,ticket) {

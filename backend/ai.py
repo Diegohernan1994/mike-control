@@ -104,7 +104,7 @@ MIKE_TOOLS_SCHEMA = [
     {
         'type': 'function',
         'name': 'mike_query_site',
-        'description': 'Ejecuta una herramienta de solo lectura en un sitio conectado (wp_get_overview, wp_list_content, wp_read_file, wp_recent_changes, wp_get_activity_log, ssh_list_dir, ssh_read_file, ssh_tail_log, git_list_files, git_read_file, git_list_prs).',
+        'description': 'Ejecuta una herramienta de solo lectura en un sitio conectado (WordPress: wp_get_site_overview, wp_system_health_check, wp_read_debug_log, wp_inspect_url, wp_list_pages, wp_list_plugins, wp_recent_changes, wp_get_activity_log, wc_list_products, wc_list_orders; SSH: ssh_list_dir, ssh_read_file, ssh_tail_log; GitHub/Vercel: git_list_files, git_read_file, git_list_prs).',
         'parameters': {
             'type': 'object',
             'properties': {
@@ -133,7 +133,7 @@ MIKE_TOOLS_SCHEMA = [
     {
         'type': 'function',
         'name': 'mike_propose_site_action',
-        'description': 'Emite una orden de cambio/escritura para un sitio creando una propuesta en la pestana Aprobaciones para que Diego la autorice antes de ejecutarse.',
+        'description': 'Emite una orden de cambio/escritura para un sitio creando una propuesta en la pestana Aprobaciones para que Diego la autorice antes de ejecutarse (ej: updraft_manage_backups, wp_maintenance_repair, wp_toggle_plugin, wc_create_product, wc_update_product, git_propose_change, git_merge_pr).',
         'parameters': {
             'type': 'object',
             'properties': {
@@ -270,7 +270,9 @@ class Responder:
             return json.dumps({'error': f'Herramienta de solo lectura "{tool_name}" no disponible o no conectada para {sid}.'}, ensure_ascii=False)
 
         if t_name == 'mike_ask_agent':
-            instruction = str(t_args.get('instruction') or '').strip()
+            if sid == 'mike':
+                return json.dumps({'error': 'No podes enviarte ordenes a vos mismo.'}, ensure_ascii=False)
+            instruction = str(t_args.get('instruction') or '').strip()[:2000]
             if not instruction:
                 return json.dumps({'error': 'La orden/instruccion no puede estar vacia.'}, ensure_ascii=False)
             lock = ctx['get_lock'](sid) if ctx.get('get_lock') else None
@@ -305,6 +307,16 @@ class Responder:
                     sub_args = {}
             except Exception:
                 return json.dumps({'error': 'args_json invalido.'}, ensure_ascii=False)
+            wp_all_tools = {t['name'] for t in WP_TOOLS_SCHEMA}
+            git_all_tools = {t['name'] for t in GIT_TOOLS_SCHEMA}
+            if tool_name in wp_all_tools and not is_read_only_call(tool_name, sub_args):
+                if not ctx.get('wp_sites', {}).get(sid):
+                    return json.dumps({'error': f'El sitio {sid} no tiene WordPress Bridge configurado.'}, ensure_ascii=False)
+            elif tool_name in git_all_tools and not is_git_read_only_call(tool_name):
+                if not ctx.get('git_sites', {}).get(sid):
+                    return json.dumps({'error': f'El sitio {sid} no tiene GitHub/Vercel GitOps configurado.'}, ensure_ascii=False)
+            else:
+                return json.dumps({'error': f'Herramienta de escritura no permitida: {tool_name}'}, ensure_ascii=False)
             creator = ctx.get('proposal_creator')
             if creator is None:
                 return json.dumps({'error': 'El sistema de aprobaciones no esta disponible.'}, ensure_ascii=False)

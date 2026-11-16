@@ -76,8 +76,11 @@ def test_add_and_remove_custom_sites_via_api():
         assert c.post('/api/sites', auth=AUTH, headers=HEADERS, json={'id': 'mike', 'name': 'Mike 2', 'kind': 'wordpress'}).status_code == 422
         assert c.post('/api/sites', auth=AUTH, headers=HEADERS, json={'id': 'BAD ID!', 'name': 'Bad', 'kind': 'vercel'}).status_code == 422
 
-        # Invalid URL rejected
+        # Invalid and internal/SSRF URLs rejected
         assert c.post('/api/sites', auth=AUTH, headers=HEADERS, json={'id': 'badurl', 'name': 'Bad', 'kind': 'vercel', 'url': 'ftp://x.com'}).status_code == 422
+        assert c.post('/api/sites', auth=AUTH, headers=HEADERS, json={'id': 'ssrf1', 'name': 'SSRF', 'kind': 'vercel', 'url': 'http://127.0.0.1:8000'}).status_code == 422
+        assert c.post('/api/sites', auth=AUTH, headers=HEADERS, json={'id': 'ssrf2', 'name': 'SSRF2', 'kind': 'vercel', 'url': 'http://169.254.169.254/latest/meta-data/'}).status_code == 422
+        assert c.post('/api/sites', auth=AUTH, headers=HEADERS, json={'id': 'ssrf3', 'name': 'SSRF3', 'kind': 'vercel', 'url': 'http://localhost:3000'}).status_code == 422
 
         # Add custom Vercel site with monitoring URL
         r = c.post('/api/sites', auth=AUTH, headers=HEADERS, json={'id': 'modernroofing', 'name': 'Modern Roofing', 'kind': 'vercel', 'url': 'https://modernroofing.example'})
@@ -149,13 +152,13 @@ def test_mike_coordinator_tools(monkeypatch):
         if len(calls) == 2:
             return {'output': [{'type': 'function_call', 'call_id': 'c2', 'name': 'mike_read_agent_chat', 'arguments': '{"site_id":"exodus"}'}]}
         if len(calls) == 3:
-            return {'output': [{'type': 'function_call', 'call_id': 'c3', 'name': 'mike_propose_site_action', 'arguments': '{"site_id":"exodus","tool_name":"wp_create_backup","args_json":"{}"}'}]}
+            return {'output': [{'type': 'function_call', 'call_id': 'c3', 'name': 'mike_propose_site_action', 'arguments': '{"site_id":"exodus","tool_name":"updraft_manage_backups","args_json":"{\\"action\\":\\"create\\"}"}'}]}
         return {'output': [{'type': 'message', 'role': 'assistant', 'content': [{'type': 'output_text', 'text': 'Informe completo verificado.'}]}]}
 
     monkeypatch.setattr(responder, '_call_responses', fake_call)
     ctx = {
         'sites': [{'id': 'exodus', 'name': 'Exodus', 'kind': 'wordpress', 'url': 'https://exodusremodeling.com'}],
-        'wp_sites': {},
+        'wp_sites': {'exodus': {'name': 'Exodus', 'url': 'https://exodusremodeling.com', 'bridge_secret': 'sec'}},
         'ssh_sites': {},
         'git_sites': {},
         'get_checks': store.latest_checks_by_site,
@@ -170,4 +173,7 @@ def test_mike_coordinator_tools(monkeypatch):
     assert reply == 'Informe completo verificado.'
     assert 'mike_overview' in calls[0]
     assert 'mike_ask_agent' in calls[0]
-    assert len(proposals) == 1 and proposals[0]['site_id'] == 'exodus' and proposals[0]['tool_name'] == 'wp_create_backup'
+    assert len(proposals) == 1 and proposals[0]['site_id'] == 'exodus' and proposals[0]['tool_name'] == 'updraft_manage_backups'
+    # Disallowed / unknown write tool is rejected
+    bad_res = responder._exec_mike_tool('mike_propose_site_action', {'site_id': 'exodus', 'tool_name': 'evil_shell', 'args_json': '{}'}, ctx)
+    assert 'no permitida' in bad_res

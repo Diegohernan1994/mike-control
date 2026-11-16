@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from threading import Lock
 from threading import Event, Thread
-from backend.monitor import probe, INTERVAL_SECONDS, URL as DEFAULT_MONITOR_URL
+from backend.monitor import probe, validate_public_http_url, INTERVAL_SECONDS, URL as DEFAULT_MONITOR_URL
 from backend.ai import Responder, AIUnavailable
 from backend.wp_bridge import BridgeError, execute_remote_tool, params_hash as compute_params_hash
 from backend.git_bridge import GitBridgeError, execute_git_proposal
@@ -338,6 +338,9 @@ def create_app(settings=None, store=None, responder=None):
         list_fn = getattr(store, 'list_sites', None)
         if list_fn:
             for row in list_fn():
+                if row.get('hidden'):
+                    targets.pop(row['id'], None)
+                    continue
                 if row.get('url'):
                     targets[row['id']] = row['url']
         return list(targets.items())
@@ -455,18 +458,22 @@ def create_app(settings=None, store=None, responder=None):
     @app.get('/api/status', dependencies=[Depends(owner)])
     def status():
         store.ready()
+        agents = all_agents()
+        active_ids = {a['id'] for a in agents}
+        site_checks = [c for c in getattr(store, 'latest_checks_by_site', lambda: [])() if c.get('site_id') in active_ids]
+        incidents = [i for i in getattr(store, 'recent_incidents', lambda: [])() if i.get('site_id') in active_ids]
         has_execution = bool(settings.wp_sites or settings.git_sites)
         return {'database':'connected', 'ai':'configured' if responder else 'not_connected', 'telegram':'not_connected',
                 'ssh':'read_only' if settings.ssh_sites else 'not_connected',
                 'monitoring':'enabled' if settings.monitor_enabled else 'disabled', 'scan_interval_minutes':15,
                 'latest_check':store.latest_check(),
-                'site_checks':getattr(store, 'latest_checks_by_site', lambda: [])(),
-                'incidents':getattr(store, 'recent_incidents', lambda: [])(),
+                'site_checks':site_checks,
+                'incidents':incidents,
                 'execution':'approval_required' if has_execution else 'disabled',
                 'wp_sites':sorted(settings.wp_sites.keys()),
                 'ssh_sites':sorted(settings.ssh_sites.keys()),
                 'git_sites':sorted(settings.git_sites.keys()),
-                'agents':all_agents()}
+                'agents':agents}
 
     def check_agent(agent):
         if not any(a['id'] == agent for a in all_agents()):
@@ -481,8 +488,8 @@ def create_app(settings=None, store=None, responder=None):
             raise HTTPException(422, 'ID de sitio invalido (usa 2-32 letras minusculas, numeros, guiones).')
         if not name:
             raise HTTPException(422, 'Nombre requerido.')
-        if url and not (url.startswith('https://') or url.startswith('http://')):
-            raise HTTPException(422, 'La URL debe empezar con https:// o http://')
+        if url and not validate_public_http_url(url):
+            raise HTTPException(422, 'URL invalida o no permitida (usa http(s) publico).')
         upsert_fn = getattr(store, 'upsert_site', None)
         if not upsert_fn:
             raise HTTPException(501, 'Site registry not available')
