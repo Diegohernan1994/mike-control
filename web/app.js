@@ -96,6 +96,13 @@ const I18N = {
     msg_placeholder: 'Escribí tu mensaje…',
     send_btn: 'Enviar ↑',
     sending_btn: 'Respondiendo…',
+    daily_title: 'Informe diario',
+    daily_schedule: 'Todos los días a las 08:00, hora de Argentina. Los informes se guardan en los chats de los agentes y se reúnen en Chat con Mike.',
+    daily_waiting: 'Todavía no se generó un informe diario.',
+    daily_completed: 'Terminado',
+    daily_partial: 'Terminado con sitios sin conexión o consultas fallidas',
+    daily_failed: 'Falló o se interrumpió',
+    daily_running: 'Generando informes',
     you: 'Vos',
     system: 'Sistema',
     no_messages: 'Esta conversación aún no tiene mensajes.',
@@ -191,6 +198,13 @@ const I18N = {
     msg_placeholder: 'Type your message…',
     send_btn: 'Send ↑',
     sending_btn: 'Replying…',
+    daily_title: 'Daily report',
+    daily_schedule: 'Every day at 08:00 Argentina time. Reports are saved in agent chats and collected in Chat with Mike.',
+    daily_waiting: 'No daily report has been generated yet.',
+    daily_completed: 'Completed',
+    daily_partial: 'Completed with disconnected sites or failed queries',
+    daily_failed: 'Failed or interrupted',
+    daily_running: 'Generating reports',
     you: 'You',
     system: 'System',
     no_messages: 'This conversation has no messages yet.',
@@ -276,6 +290,8 @@ async function view(tab) {
       content.innerHTML=`<section class="card"><h2>${t('memory_title')}</h2><p>${t('memory_p1',{agents:agentNames})}</p><p>${t('memory_p2')}</p></section>`;
     }
     else if(tab==='Configuración'){
+      const daily=status.daily_reports;
+      const dailyCard=daily?`<section class="card"><h2>${t('daily_title')}</h2><p>${daily.enabled?t('daily_schedule'):t('disabled')}</p><p class="muted">${daily.latest_run?escapeHtml(fmtDate(daily.latest_run.started_at))+' · '+escapeHtml(t('daily_'+daily.latest_run.status)):t('daily_waiting')}</p></section>`:'';
       const siteRows=(status.agents||[]).filter(a=>a.kind!=='system').map(a=>{
         const prefix=a.id.toUpperCase();
         const envHint=a.kind==='wordpress'
@@ -285,6 +301,7 @@ async function view(tab) {
         return `<div class="row" style="padding:8px 0;border-bottom:1px solid #eceeed"><div><strong>${escapeHtml(a.name)}</strong> <span class="muted">(${escapeHtml(a.kind==='wordpress'?'WordPress':'Astro / Vercel')} · ${escapeHtml(a.id)})</span><div class="muted" style="font-size:12px">${t('env_vars')}: <code>${escapeHtml(envHint)}</code>${a.url?` · ${t('monitoring_label')}: `+escapeHtml(a.url):''}</div></div>${actions}</div>`;
       }).join('');
       content.innerHTML=`<section class="card"><h2>${t('connections')}</h2><p>${t('conn_pg')}<br>${t('conn_ai')}: ${status.ai==='configured'?t('ai_configured'):t('not_configured')}<br>${t('conn_tg')}<br>${t('conn_ssh')}: ${status.ssh==='read_only'?t('active')+' ('+escapeHtml((status.ssh_sites||[]).map(s=>names[s]||s).join(', '))+')':t('not_connected')}<br>${t('conn_http')}: ${status.monitoring==='enabled'?t('enabled_lower'):t('disabled_lower')}<br>${t('conn_wp')}: ${(status.wp_sites||[]).length?escapeHtml((status.wp_sites||[]).map(s=>names[s]||s).join(', ')):t('not_configured')}<br>${t('conn_git')}: ${(status.git_sites||[]).length?escapeHtml((status.git_sites||[]).map(s=>names[s]||s).join(', ')):t('not_configured')}</p><p>${t('creds_note')}</p></section><section class="card"><h2>${t('add_site_title')}</h2><p class="muted">${t('add_site_desc')}</p><form id="add-site-form" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px"><input name="name" placeholder="${t('ph_name')}" maxlength="80" required style="flex:2;min-width:160px;padding:8px;border:1px solid #d7dcd9;border-radius:8px"><input name="id" placeholder="${t('ph_id')}" pattern="[a-z0-9][a-z0-9_-]{1,31}" maxlength="32" required style="flex:1;min-width:120px;padding:8px;border:1px solid #d7dcd9;border-radius:8px"><input name="url" type="url" placeholder="${t('ph_url')}" maxlength="300" style="flex:2;min-width:200px;padding:8px;border:1px solid #d7dcd9;border-radius:8px"><select name="kind" style="padding:8px;border:1px solid #d7dcd9;border-radius:8px"><option value="wordpress">WordPress</option><option value="vercel">Astro / Vercel</option></select><button type="submit">${t('add_site_btn')}</button></form><div style="margin-top:16px">${siteRows}</div></section>`;
+      content.insertAdjacentHTML('afterbegin',dailyCard);
       document.querySelector('#add-site-form')?.addEventListener('submit',async e=>{
         e.preventDefault();
         const fd=new FormData(e.currentTarget);
