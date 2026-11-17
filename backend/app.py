@@ -6,6 +6,8 @@ import logging
 import os
 import re
 import secrets
+import time
+import traceback
 from collections import defaultdict
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -23,6 +25,7 @@ import psycopg
 from psycopg.rows import dict_row
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.encoders import jsonable_encoder
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, Field
 
@@ -326,6 +329,23 @@ def create_app(settings=None, store=None, responder=None):
     # Docker runs one worker. Reject simultaneous sends instead of interleaving turns.
     chat_locks = defaultdict(Lock)
     locks_guard = Lock()
+    # Same single-worker scope as chat_locks. Conversation content stays in PostgreSQL.
+    response_jobs = {}
+    jobs_guard = Lock()
+
+    def response_job(agent, job_id=None):
+        with jobs_guard:
+            cutoff = time.monotonic() - 3600
+            for key, job in list(response_jobs.items()):
+                if job['status'] != 'running' and job['updated'] < cutoff:
+                    del response_jobs[key]
+            if job_id is not None:
+                job = response_jobs.get(job_id)
+                return dict(job) if job and job['agent'] == agent else None
+            for job in reversed(list(response_jobs.values())):
+                if job['agent'] == agent and job['status'] == 'running':
+                    return {'id': job['id'], 'status': job['status']}
+        return None
 
     def monitor_targets():
         targets = {'usbestroofing': DEFAULT_MONITOR_URL}
@@ -537,7 +557,15 @@ def create_app(settings=None, store=None, responder=None):
     @app.get('/api/agents/{agent}/messages', dependencies=[Depends(owner)])
     def messages(agent: str):
         check_agent(agent)
-        return {'messages':store.messages(agent)}
+        return {'messages':store.messages(agent), 'response':response_job(agent)}
+
+    @app.get('/api/agents/{agent}/responses/{job_id}', dependencies=[Depends(owner)])
+    def response_status(agent: str, job_id: str):
+        check_agent(agent)
+        job = response_job(agent, job_id)
+        if job is None:
+            raise HTTPException(404, 'Response interrupted or expired; check the saved history')
+        return {key: job[key] for key in ('id', 'status', 'result')}
 
     @app.delete('/api/agents/{agent}/messages', dependencies=[Depends(owner)])
     def clear_messages(agent: str):
@@ -556,7 +584,7 @@ def create_app(settings=None, store=None, responder=None):
             lock.release()
 
     @app.post('/api/agents/{agent}/messages', dependencies=[Depends(owner)], status_code=201)
-    def append(agent: str, body: Message):
+    def append(agent: str, body: Message, background: bool = False):
         check_agent(agent)
         text = body.content.strip()
         if not text:
@@ -567,6 +595,11 @@ def create_app(settings=None, store=None, responder=None):
             raise HTTPException(409, 'This chat already has a response in progress')
         try:
             message = store.append(agent,text)
+        except Exception:
+            lock.release()
+            raise
+
+        def respond():
             result = {'message':message, 'ai':'not_connected'}
             if responder is not None:
                 try:
@@ -608,6 +641,46 @@ def create_app(settings=None, store=None, responder=None):
                     result.update(ai='unavailable', ai_error=exc.reason,
                                   warning='Mensaje guardado. ' + exc.user_message + ' [Diagnóstico: ' + exc.reason + ']')
             return result
+
+        if background and responder is not None:
+            job_id = secrets.token_urlsafe(24)
+            with jobs_guard:
+                response_jobs[job_id] = {
+                    'id': job_id, 'agent': agent, 'status': 'running',
+                    'result': None, 'updated': time.monotonic(),
+                }
+
+            def run_response():
+                try:
+                    result = respond()
+                except Exception as exc:
+                    # Trace locations help diagnosis without exposing exception values/secrets.
+                    frames = traceback.extract_tb(exc.__traceback__)
+                    locations = ' > '.join(f'{Path(f.filename).name}:{f.lineno}:{f.name}' for f in frames)
+                    logging.getLogger('mike.ai').error('Response %s failed (%s) at %s', job_id, type(exc).__name__, locations)
+                    result = {'ai': 'unavailable', 'ai_error': 'backend',
+                              'warning': f'Mensaje guardado. Falló el procesamiento del backend. [Diagnóstico: backend; referencia: {job_id}]'}
+                finally:
+                    lock.release()
+                with jobs_guard:
+                    response_jobs[job_id].update(
+                        status='completed' if result.get('ai') == 'responded' else 'failed',
+                        result={key: result[key] for key in ('ai', 'ai_error', 'warning') if key in result},
+                        updated=time.monotonic(),
+                    )
+
+            try:
+                Thread(target=run_response, daemon=True, name=f'chat-{agent}').start()
+            except Exception:
+                lock.release()
+                with jobs_guard:
+                    del response_jobs[job_id]
+                raise
+            return JSONResponse({'message': jsonable_encoder(message),
+                                 'ai': 'pending', 'response_id': job_id}, status_code=202)
+
+        try:
+            return respond()
         finally:
             lock.release()
 

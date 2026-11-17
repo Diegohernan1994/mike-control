@@ -26,6 +26,7 @@ const I18N = {
     err_409: 'Ya hay una respuesta en curso en este chat. Esperá antes de enviar.',
     err_401: 'Sesión no autorizada. Recargá e ingresá tus credenciales.',
     err_generic: 'No se pudo completar la consulta. Revisá la conexión y el estado del backend.',
+    err_interrupted: 'La respuesta se interrumpió o venció. Revisá el historial guardado antes de volver a enviar.',
     no_checks: 'Sin mediciones',
     stale_check: 'Medición vencida',
     responded: 'Respondió',
@@ -120,6 +121,7 @@ const I18N = {
     err_409: 'A response is already in progress in this chat. Please wait before sending.',
     err_401: 'Unauthorized session. Reload and enter your credentials.',
     err_generic: 'Could not complete request. Check your connection and backend status.',
+    err_interrupted: 'The response was interrupted or expired. Check the saved history before sending again.',
     no_checks: 'No checks yet',
     stale_check: 'Stale check',
     responded: 'Responded',
@@ -242,7 +244,7 @@ function renderSidebar(agents) {
 }
 async function api(path, options={}) {
   const response = await fetch(path,{...options, headers:{'Content-Type':'application/json','X-Mike-Request':'1',...options.headers}});
-  if (!response.ok) throw new Error(response.status===409?t('err_409'):response.status===401?t('err_401'):t('err_generic'));
+  if (!response.ok) throw new Error(response.status===409?t('err_409'):response.status===401?t('err_401'):response.status===404 && path.includes('/responses/')?t('err_interrupted'):t('err_generic'));
   return response.json();
 }
 function select() {
@@ -357,20 +359,49 @@ async function chat(agent) {
     try{await api('/api/agents/'+agent+'/messages',{method:'DELETE'});if(ticket===generation)await refresh(agent,ticket);}
     catch(e){if(ticket===generation)error.textContent=e.message;}
   });
-  await refresh(agent,ticket);
+  const data=await refresh(agent,ticket);
+  if(data?.response && ticket===generation){
+    const form=document.querySelector('form');
+    setComposerBusy(form,true);
+    try{await waitForResponse(agent,data.response.id,ticket);}
+    catch(e){if(ticket===generation)error.textContent=e.message;}
+    finally{setComposerBusy(form,false);}
+  }
 }
 async function refresh(agent,ticket) {
   try{const data=await api('/api/agents/'+agent+'/messages');if(ticket!==generation)return;
     const box=document.querySelector('#messages');
     box.innerHTML=data.messages.length?data.messages.map(m=>`<div class="message">${escapeHtml(m.content)}<span class="date">${m.role==='user'?t('you'):m.role==='assistant'?escapeHtml(names[agent]):t('system')} · ${escapeHtml(fmtDate(m.created_at))}</span></div>`).join(''):`<p class="muted">${t('no_messages')}</p>`;box.scrollTop=box.scrollHeight;
+    return data;
   }catch(e){if(ticket===generation)error.textContent=e.message;}
 }
+function setComposerBusy(form,busy) {
+  form.querySelector('textarea').disabled=busy;
+  const button=form.querySelector('button');
+  button.disabled=busy;button.textContent=t(busy?'sending_btn':'send_btn');
+}
+async function waitForResponse(agent,id,ticket) {
+  while(ticket===generation){
+    const job=await api('/api/agents/'+agent+'/responses/'+id);
+    if(ticket!==generation)return;
+    if(job.status!=='running'){
+      await refresh(agent,ticket);
+      if(ticket===generation)error.textContent=job.result?.warning || '';
+      return;
+    }
+    await new Promise(resolve=>setTimeout(resolve,2000));
+  }
+}
 async function send(e,agent,ticket) {
-  e.preventDefault();const form=e.currentTarget, input=form.querySelector('textarea'),button=form.querySelector('button');
-  const text=input.value.trim();if(!text)return;button.disabled=true;button.textContent=t('sending_btn');input.disabled=true;error.textContent='';
-  try{const result=await api('/api/agents/'+agent+'/messages',{method:'POST',body:JSON.stringify({content:text})});
-    input.value='';if(ticket===generation){await refresh(agent,ticket);error.textContent=result.warning || (result.ai==='not_connected'?t('ai_missing_key'):'');}
-  }catch(e){if(ticket===generation)error.textContent=e.message;}finally{button.disabled=false;input.disabled=false;button.textContent=t('send_btn');}
+  e.preventDefault();const form=e.currentTarget, input=form.querySelector('textarea');
+  const text=input.value.trim();if(!text)return;setComposerBusy(form,true);error.textContent='';
+  try{const result=await api('/api/agents/'+agent+'/messages?background=true',{method:'POST',body:JSON.stringify({content:text})});
+    input.value='';if(ticket===generation){
+      await refresh(agent,ticket);
+      if(result.response_id)await waitForResponse(agent,result.response_id,ticket);
+      else if(ticket===generation)error.textContent=result.warning || (result.ai==='not_connected'?t('ai_missing_key'):'');
+    }
+  }catch(e){if(ticket===generation)error.textContent=e.message;}finally{setComposerBusy(form,false);}
 }
 document.querySelectorAll('[data-lang]').forEach(b=>b.addEventListener('click',()=>setLang(b.dataset.lang)));
 document.querySelectorAll('[data-view]').forEach(b=>b.addEventListener('click',()=>view(b.dataset.view)));
