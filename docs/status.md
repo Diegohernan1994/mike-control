@@ -1,5 +1,14 @@
 # Estado — 2026-10-28
 
+## Informes diarios preparados — 2026-11-17
+El propietario pidió un diagnóstico diario de cada agente a las 08:00 de Argentina. Rama `codex/daily-reports`: scheduler dentro de la aplicación, con `America/Argentina/Buenos_Aires` y comprobación cada 30 segundos. Se habilita por defecto al cargar la configuración del servidor si OpenAI está configurado; `DAILY_REPORTS_ENABLED=false` lo desactiva.
+
+Se reutiliza la herramienta de informes de lectura a todos los sitios activos. Guarda las respuestas en cada chat de agente y reúne los resultados, en partes de menos de 8000 caracteres cuando es necesario, en Chat con Mike. La recopilación es determinista y no agrega llamadas a OpenAI. Los sitios sin conexión o agentes ocupados/fallidos se indican explícitamente. Configuración muestra horario y última ejecución.
+
+La tabla `daily_reports` registra una única ejecución por fecha argentina mediante clave primaria e inserción atómica. La publicación de resultados en Mike y la finalización de la ejecución comparten una transacción. Si un informe falla o el proceso se interrumpe después de reclamar la fecha, se conservan los mensajes ya guardados y ese día no se vuelve a gastar API automáticamente. Los registros de días anteriores que quedaron en ejecución se marcan como interrumpidos en la siguiente comprobación. Si el servidor arranca después de las 08:00 y ese día aún no se había iniciado el informe, lo genera al arrancar. Una conversación activa con Mike pospone el inicio hasta que quede libre.
+
+Validación local: 73 pruebas aprobadas y 4 pruebas de PostgreSQL omitidas por falta de una base desechable local. JavaScript válido y comprobación con DOM/API simulados de la tarjeta del horario y última ejecución. PostgreSQL y Docker se verifican en CI. Pendiente revisión, integración y despliegue con autorización. La generación consume la API configurada por los informes de los agentes. La comprobación final requiere los conectores reales después de desplegar.
+
 ## Corrección preparada — 2026-11-17
 El propietario compartió un fallo genérico del panel al pedir informes de todos los agentes. Los registros aportados muestran arranques y cierres ordenados, sin excepción asociada al pedido. La causa del fallo en producción y de los reinicios queda sin confirmar.
 

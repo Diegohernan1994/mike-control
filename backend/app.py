@@ -16,6 +16,7 @@ from threading import Lock
 from threading import Event, Thread
 from backend.monitor import probe, validate_public_http_url, INTERVAL_SECONDS, URL as DEFAULT_MONITOR_URL
 from backend.ai import Responder, AIUnavailable
+from backend.daily_reports import REPORT_HOUR, REPORT_TIMEZONE, run_daily_report
 from backend.wp_bridge import BridgeError, execute_remote_tool, params_hash as compute_params_hash
 from backend.git_bridge import GitBridgeError, execute_git_proposal
 from pathlib import Path
@@ -50,6 +51,7 @@ class Settings:
     wp_sites: dict = field(default_factory=dict, repr=False)
     ssh_sites: dict = field(default_factory=dict, repr=False)
     git_sites: dict = field(default_factory=dict, repr=False)
+    daily_reports_enabled: bool = False
 
     @classmethod
     def from_env(cls):
@@ -121,7 +123,8 @@ class Settings:
                    monitor_enabled=os.environ.get('MONITOR_ENABLED', '').lower() == 'true',
                    wp_sites=wp_sites,
                    ssh_sites=ssh_sites,
-                   git_sites=git_sites)
+                   git_sites=git_sites,
+                   daily_reports_enabled=os.environ.get('DAILY_REPORTS_ENABLED', 'true').lower() == 'true')
 
 class Store:
     def __init__(self, url):
@@ -178,6 +181,40 @@ class Store:
                 ON proposals(status, id DESC)''')
             conn.execute('ALTER TABLE proposals DROP CONSTRAINT IF EXISTS proposals_site_id_check')
             conn.execute("ALTER TABLE proposals ADD CONSTRAINT proposals_site_id_check CHECK(site_id ~ '^[a-z0-9][a-z0-9_-]{1,31}$')")
+            conn.execute('''CREATE TABLE IF NOT EXISTS daily_reports (
+                report_date date PRIMARY KEY,
+                status text NOT NULL CHECK(status IN ('running','completed','partial','failed')),
+                started_at timestamptz NOT NULL DEFAULT now(),
+                finished_at timestamptz,
+                summary_json jsonb NOT NULL DEFAULT '{}'::jsonb
+            )''')
+
+    def claim_daily_report(self, report_date):
+        with self.connect() as conn:
+            # A restart must never repeat a date that may already have incurred API usage.
+            conn.execute("""UPDATE daily_reports SET status='failed', finished_at=now(),
+                summary_json='{"error":"interrupted"}'::jsonb
+                WHERE status='running' AND report_date < %s""", (report_date,))
+            row = conn.execute("""INSERT INTO daily_reports(report_date,status)
+                VALUES (%s,'running') ON CONFLICT DO NOTHING RETURNING report_date""",
+                (report_date,)).fetchone()
+            return row is not None
+
+    def finish_daily_report(self, report_date, status, parts, summary):
+        with self.connect() as conn:
+            row = conn.execute("""SELECT status FROM daily_reports
+                WHERE report_date=%s FOR UPDATE""", (report_date,)).fetchone()
+            if not row or row['status'] != 'running':
+                return
+            for part in parts:
+                conn.execute("""INSERT INTO conversation_messages(agent_id,role,content)
+                    VALUES ('mike','assistant',%s)""", (part,))
+            conn.execute("""UPDATE daily_reports SET status=%s, finished_at=now(), summary_json=%s::jsonb
+                WHERE report_date=%s""", (status, json.dumps(summary), report_date))
+
+    def latest_daily_report(self):
+        with self.connect() as conn:
+            return conn.execute('SELECT * FROM daily_reports ORDER BY report_date DESC LIMIT 1').fetchone()
 
     def check_if_due(self, targets=None):
         # Transaction lock makes the decision and check exclusive across workers.
@@ -332,6 +369,7 @@ def create_app(settings=None, store=None, responder=None):
     # Same single-worker scope as chat_locks. Conversation content stays in PostgreSQL.
     response_jobs = {}
     jobs_guard = Lock()
+    daily_enabled = settings.daily_reports_enabled and isinstance(responder, Responder)
 
     def response_job(agent, job_id=None):
         with jobs_guard:
@@ -370,6 +408,7 @@ def create_app(settings=None, store=None, responder=None):
         store.initialize()
         stop = Event()
         worker = None
+        daily_worker = None
         if settings.monitor_enabled:
             def run():
                 while not stop.is_set():
@@ -380,12 +419,24 @@ def create_app(settings=None, store=None, responder=None):
                     stop.wait(60)
             worker = Thread(target=run, daemon=True, name='availability-monitor')
             worker.start()
+        if daily_enabled:
+            def run_reports():
+                while not stop.is_set():
+                    try:
+                        run_daily_report(store, responder, coordinator_context())
+                    except Exception as exc:
+                        logging.getLogger('mike.daily').error('Daily scheduler failed (%s)', type(exc).__name__)
+                    stop.wait(30)
+            daily_worker = Thread(target=run_reports, daemon=True, name='daily-reports')
+            daily_worker.start()
         try:
             yield
         finally:
             stop.set()
             if worker:
                 worker.join(timeout=12)
+            if daily_worker:
+                daily_worker.join(timeout=1)
 
     app = FastAPI(title='Mike Control', lifespan=lifespan, docs_url=None,
                   redoc_url=None, openapi_url=None)
@@ -475,6 +526,24 @@ def create_app(settings=None, store=None, responder=None):
                 }
         return [a for sid, a in catalog.items() if sid not in hidden_ids]
 
+    def coordinator_context():
+        def get_lock(site_id):
+            with locks_guard:
+                return chat_locks[site_id]
+        return {
+            'sites': [agent for agent in all_agents() if agent['id'] != 'mike'],
+            'wp_sites': settings.wp_sites,
+            'ssh_sites': settings.ssh_sites,
+            'git_sites': settings.git_sites,
+            'get_checks': getattr(store, 'latest_checks_by_site', None),
+            'get_incidents': getattr(store, 'recent_incidents', None),
+            'get_proposals': (lambda: store.list_proposals(limit=25)) if hasattr(store, 'list_proposals') else None,
+            'get_messages': store.messages,
+            'append_message': store.append,
+            'proposal_creator': getattr(store, 'create_proposal', None),
+            'get_lock': get_lock,
+        }
+
     @app.get('/api/status', dependencies=[Depends(owner)])
     def status():
         store.ready()
@@ -486,6 +555,9 @@ def create_app(settings=None, store=None, responder=None):
         return {'database':'connected', 'ai':'configured' if responder else 'not_connected', 'telegram':'not_connected',
                 'ssh':'read_only' if settings.ssh_sites else 'not_connected',
                 'monitoring':'enabled' if settings.monitor_enabled else 'disabled', 'scan_interval_minutes':15,
+                'daily_reports': {'enabled': daily_enabled, 'hour': REPORT_HOUR,
+                                  'timezone': str(REPORT_TIMEZONE),
+                                  'latest_run': getattr(store, 'latest_daily_report', lambda: None)()},
                 'latest_check':store.latest_check(),
                 'site_checks':site_checks,
                 'incidents':incidents,
@@ -606,22 +678,7 @@ def create_app(settings=None, store=None, responder=None):
                     if isinstance(responder, Responder):
                         coord_ctx = None
                         if agent == 'mike':
-                            def _get_lock(sid):
-                                with locks_guard:
-                                    return chat_locks[sid]
-                            coord_ctx = {
-                                'sites': [a for a in all_agents() if a['id'] != 'mike'],
-                                'wp_sites': settings.wp_sites,
-                                'ssh_sites': settings.ssh_sites,
-                                'git_sites': settings.git_sites,
-                                'get_checks': getattr(store, 'latest_checks_by_site', None),
-                                'get_incidents': getattr(store, 'recent_incidents', None),
-                                'get_proposals': (lambda: store.list_proposals(limit=25)) if hasattr(store, 'list_proposals') else None,
-                                'get_messages': store.messages,
-                                'append_message': store.append,
-                                'proposal_creator': getattr(store, 'create_proposal', None),
-                                'get_lock': _get_lock,
-                            }
+                            coord_ctx = coordinator_context()
                         answer = responder.reply(
                             agent,
                             store.messages(agent),

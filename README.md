@@ -5,6 +5,8 @@ Centro de supervisión con Mike y un agente por sitio. Primera entrega de backen
 **Chat con IA opcional y memoria reciente por agente.** Configurar OPENAI_API_KEY según [la guía de IA](docs/ai.md). El control HTTP de US Best Roofing está desactivado por defecto; se habilita con MONITOR_ENABLED=true. Consulta únicamente la portada, sin cargar recursos ni seguir redirecciones, y registra el resultado en PostgreSQL cada 15 minutos. No verifica formularios ni representación visual. Todavía no hay SSH ni Telegram; los mensajes no ejecutan acciones ni tienen acceso a las mediciones.
 
 ## Instalación
+Los agentes generan un diagnóstico diario de lectura a las **08:00 de Argentina** (`America/Argentina/Buenos_Aires`) cuando OpenAI está configurado. Cada informe queda en el chat del agente y los resultados se reúnen en Chat con Mike, sin una llamada extra de IA para esa recopilación. El estado aparece en Configuración. El registro diario en PostgreSQL evita repetir el consumo del mismo día tras un reinicio. Si la app se enciende después de las 08:00 y ese día no había comenzado un informe, lo genera al arrancar. Para desactivar la programación, usar `DAILY_REPORTS_ENABLED=false` en Easypanel y volver a implementar.
+
 Leer [la guía de Easypanel](docs/easypanel.md). La app requiere DATABASE_URL, ADMIN_USERNAME y ADMIN_PASSWORD (24+ caracteres). No hay credenciales por defecto. Configurar secretos directamente en el servidor, nunca en Git ni chats.
 
 ```sh
