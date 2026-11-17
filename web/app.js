@@ -385,10 +385,90 @@ async function chat(agent) {
     finally{setComposerBusy(form,false);}
   }
 }
+function fmtInline(escaped) {
+  return escaped
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/\[(CR[IÍ]TICO|CRITICAL)\]/gi, '<span class="sev sev-crit">$1</span>')
+    .replace(/\[(ALTA|HIGH|ERROR)\]/gi, '<span class="sev sev-high">$1</span>')
+    .replace(/\[(MEDIA|MEDIUM|ATENCI[ÓO]N|ADVERTENCIA)\]/gi, '<span class="sev sev-med">$1</span>')
+    .replace(/\[(OK|BAJA|LOW)\]/gi, '<span class="sev sev-ok">$1</span>')
+    .replace(/\b(Prioridad alta|HTTP 503)\b/gi, '<span class="sev sev-high">$1</span>')
+    .replace(/\b(Prioridad media)\b/gi, '<span class="sev sev-med">$1</span>')
+    .replace(/\b(HTTP 200)\b/g, '<span class="sev sev-ok">$1</span>');
+}
+
+function renderMessageHtml(raw) {
+  const lines = escapeHtml(raw).split(/\r?\n/);
+  const out = [];
+  let i = 0;
+  const isSep = l => /^\s*\|(?:\s*:?-+:?\s*\|)+\s*$/.test(l);
+  const splitRow = l => l.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map(c => c.trim());
+
+  while (i < lines.length) {
+    const line = lines[i];
+    if (!line.trim()) { i++; continue; }
+
+    if (line.includes('|') && i + 1 < lines.length && isSep(lines[i + 1])) {
+      const headers = splitRow(line);
+      i += 2;
+      const bodyRows = [];
+      while (i < lines.length && lines[i].includes('|') && lines[i].trim()) {
+        bodyRows.push(splitRow(lines[i]));
+        i++;
+      }
+      out.push('<table><thead><tr>' + headers.map(h => `<th>${fmtInline(h)}</th>`).join('') + '</tr></thead><tbody>'
+        + bodyRows.map(r => '<tr>' + headers.map((_, idx) => `<td>${fmtInline(r[idx] || '')}</td>`).join('') + '</tr>').join('')
+        + '</tbody></table>');
+      continue;
+    }
+
+    const h = line.match(/^(#{2,4})\s+(.*)$/);
+    if (h) {
+      const tag = 'h' + h[1].length;
+      out.push(`<${tag}>${fmtInline(h[2])}</${tag}>`);
+      i++;
+      continue;
+    }
+
+    if (/^\s*[-*]\s+/.test(line)) {
+      const items = [];
+      while (i < lines.length && /^\s*[-*]\s+/.test(lines[i])) {
+        items.push('<li>' + fmtInline(lines[i].replace(/^\s*[-*]\s+/, '')) + '</li>');
+        i++;
+      }
+      out.push('<ul>' + items.join('') + '</ul>');
+      continue;
+    }
+
+    if (/^\s*\d+\.\s+/.test(line)) {
+      const items = [];
+      while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i])) {
+        items.push('<li>' + fmtInline(lines[i].replace(/^\s*\d+\.\s+/, '')) + '</li>');
+        i++;
+      }
+      out.push('<ol>' + items.join('') + '</ol>');
+      continue;
+    }
+
+    const para = [];
+    while (i < lines.length && lines[i].trim() && !/^(#{2,4})\s+/.test(lines[i]) && !/^\s*[-*]\s+/.test(lines[i]) && !/^\s*\d+\.\s+/.test(lines[i]) && !(lines[i].includes('|') && i + 1 < lines.length && isSep(lines[i + 1]))) {
+      para.push(fmtInline(lines[i]));
+      i++;
+    }
+    out.push('<p>' + para.join('<br>') + '</p>');
+  }
+  return out.join('');
+}
+
 async function refresh(agent,ticket) {
   try{const data=await api('/api/agents/'+agent+'/messages');if(ticket!==generation)return;
     const box=document.querySelector('#messages');
-    box.innerHTML=data.messages.length?data.messages.map(m=>`<div class="message">${escapeHtml(m.content)}<span class="date">${m.role==='user'?t('you'):m.role==='assistant'?escapeHtml(names[agent]):t('system')} · ${escapeHtml(fmtDate(m.created_at))}</span></div>`).join(''):`<p class="muted">${t('no_messages')}</p>`;box.scrollTop=box.scrollHeight;
+    box.innerHTML=data.messages.length?data.messages.map(m=>{
+      const who=m.role==='user'?t('you'):m.role==='assistant'?escapeHtml(names[agent]):t('system');
+      const body=m.role==='user'?escapeHtml(m.content):`<div class="msg-body">${renderMessageHtml(m.content)}</div>`;
+      return `<div class="message${m.role==='user'?' user':''}">${body}<span class="date">${who} · ${escapeHtml(fmtDate(m.created_at))}</span></div>`;
+    }).join(''):`<p class="muted">${t('no_messages')}</p>`;box.scrollTop=box.scrollHeight;
     return data;
   }catch(e){if(ticket===generation)error.textContent=e.message;}
 }
