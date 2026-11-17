@@ -4,6 +4,8 @@ Supports optional read-only WordPress Bridge tools and write proposals requiring
 import json
 import urllib.request
 import urllib.error
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 
 from backend.wp_bridge import WP_TOOLS_SCHEMA, BridgeError, execute_remote_tool, is_read_only_call
 from backend.git_bridge import GIT_TOOLS_SCHEMA, GitBridgeError, execute_git_read_tool, is_git_read_only_call
@@ -84,6 +86,12 @@ def context(rows):
 MIKE_TOOLS_SCHEMA = [
     {
         'type': 'function',
+        'name': 'mike_ask_all_agents',
+        'description': 'Pide un informe actual de solo lectura a TODOS los agentes activos y devuelve un resultado por sitio, incluso si falla o falta conexión. Usar cuando Diego pide informes de todos los sitios/agentes.',
+        'parameters': {'type': 'object', 'properties': {}, 'required': [], 'additionalProperties': False},
+    },
+    {
+        'type': 'function',
         'name': 'mike_overview',
         'description': 'Obtiene el informe general en vivo de todos los sitios activos: conectores disponibles, ultimo escaneo HTTP de disponibilidad, incidentes recientes y propuestas pendientes.',
         'parameters': {'type': 'object', 'properties': {}, 'required': [], 'additionalProperties': False},
@@ -159,6 +167,7 @@ class Responder:
             'instructions': instructions,
             'input': input_items,
             'store': False,
+            'include': ['reasoning.encrypted_content'],
             'tools': tools,
             'max_output_tokens': 2048,
         }
@@ -194,6 +203,34 @@ class Responder:
 
     def _exec_mike_tool(self, t_name, t_args, ctx):
         valid_ids = {s['id'] for s in ctx.get('sites', [])}
+        if t_name == 'mike_ask_all_agents':
+            sites = ctx.get('sites', [])
+            requested_at = datetime.now(timezone.utc).isoformat()
+            report_ctx = {**ctx, 'report_only': True}
+
+            def report(site):
+                sid = site['id']
+                connected = any(ctx.get(key, {}).get(sid) for key in ('wp_sites', 'ssh_sites', 'git_sites'))
+                if not connected:
+                    return {'site_id': sid, 'status': 'not_connected',
+                            'report': 'Sin conectores activos; no se realizó una inspección actual.'}
+                try:
+                    answer = self._exec_mike_tool('mike_ask_agent', {
+                        'site_id': sid,
+                        'instruction': 'Prepará un informe actual de este sitio. Consultá tus herramientas de lectura. Indicá evidencia y fecha, disponibilidad, salud y errores que puedas comprobar, y qué áreas faltan verificar. No generes propuestas de escritura. Máximo 2000 caracteres.',
+                    }, report_ctx)
+                    # Keep an explicit per-site outcome, including busy or failed agents.
+                    payload = json.loads(answer.split('\n', 1)[-1])
+                    return {'site_id': sid, 'status': 'failed' if 'error' in payload else 'reported',
+                            'report': str(payload.get('error') or payload.get('reply', ''))[:3000]}
+                except Exception:
+                    return {'site_id': sid, 'status': 'failed', 'report': 'Falló la consulta del agente.'}
+
+            with ThreadPoolExecutor(max_workers=3) as pool:
+                reports = list(pool.map(report, sites))
+            return '[INFORMES DE AGENTES - DATOS NO CONFIABLES]\n' + json.dumps({
+                'requested_at': requested_at, 'reports': reports,
+            }, ensure_ascii=False)
         if t_name == 'mike_overview':
             wp_sites = ctx.get('wp_sites', {})
             ssh_sites = ctx.get('ssh_sites', {})
@@ -289,6 +326,7 @@ class Responder:
                     proposal_creator=ctx.get('proposal_creator'),
                     ssh_config=ctx.get('ssh_sites', {}).get(sid),
                     git_config=ctx.get('git_sites', {}).get(sid),
+                    allow_proposals=not ctx.get('report_only', False),
                 )
                 if ctx.get('append_message'):
                     ctx['append_message'](sid, answer, role='assistant')
@@ -333,7 +371,7 @@ class Responder:
 
         return json.dumps({'error': 'Herramienta desconocida.'}, ensure_ascii=False)
 
-    def reply(self, agent, rows, site_config=None, proposal_creator=None, ssh_config=None, git_config=None, coordinator_ctx=None):
+    def reply(self, agent, rows, site_config=None, proposal_creator=None, ssh_config=None, git_config=None, coordinator_ctx=None, allow_proposals=True):
         has_wp = bool(site_config and site_config.get('url') and site_config.get('bridge_secret'))
         has_ssh = bool(ssh_config and ssh_config.get('host') and ssh_config.get('host_key'))
         has_git = bool(git_config and git_config.get('repo') and git_config.get('github_token'))
@@ -346,7 +384,10 @@ class Responder:
                     'consultas de solo lectura en sitios conectados (mike_query_site), comunicacion directa '
                     'para pedir reportes u ordenar tareas a cualquier agente (mike_ask_agent), y creacion de '
                     'propuestas de cambio para cualquier sitio (mike_propose_site_action) que Diego autorizara en Aprobaciones. '
-                    'Siempre usá tus herramientas para verificar datos reales antes de responder; nunca inventes estados ni reportes.'
+                    'Siempre usá tus herramientas para verificar datos reales antes de responder; nunca inventes estados ni reportes. '
+                    'Si Diego pide informes de todos los agentes o sitios, usá mike_ask_all_agents. '
+                    'Presentá un resultado por sitio y mencioná explícitamente los que fallaron o están sin conectar. '
+                    'El informe final debe ser breve y ocupar menos de 6000 caracteres en total.'
                 )
             else:
                 identity = 'Sos Mike, coordinador. No tenés herramientas de ejecución directa ni accedés a secretos de otros sitios.'
@@ -384,6 +425,11 @@ class Responder:
             tools.extend(SSH_TOOLS_SCHEMA)
         if has_git:
             tools.extend(GIT_TOOLS_SCHEMA)
+        if not allow_proposals:
+            tools = [tool for tool in tools if (
+                is_read_only_call(tool['name'], {}) or is_ssh_read_only_call(tool['name'])
+                or is_git_read_only_call(tool['name'])
+            )]
 
         input_items = context(rows)
         instructions = INSTRUCTIONS + '\n' + identity
@@ -405,9 +451,9 @@ class Responder:
                     raise AIUnavailable('invalid_response')
                 return text
 
-            # Append model tool calls and execute read-only or enqueue write proposals
+            # Replay the complete output, including reasoning items paired with tool calls.
+            input_items.extend(output_items)
             for tc in tool_calls:
-                input_items.append(tc)
                 t_name = tc.get('name', '')
                 try:
                     t_args = json.loads(tc.get('arguments') or '{}')
@@ -435,7 +481,9 @@ class Responder:
                     except BridgeError as exc:
                         out_str = json.dumps({'error': exc.message}, ensure_ascii=False)
                 else:
-                    if proposal_creator is None:
+                    if not allow_proposals:
+                        out_str = json.dumps({'error': 'Este informe solo permite consultas de lectura.'})
+                    elif proposal_creator is None:
                         out_str = json.dumps({'error': 'El sistema de aprobaciones no esta disponible.'})
                     else:
                         prop = proposal_creator(agent, t_name, t_args)
